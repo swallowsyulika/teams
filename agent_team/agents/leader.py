@@ -76,21 +76,35 @@ def leader_node(state: GraphState) -> dict[str, Any]:
 
     decision: LeaderDecision = llm.invoke(messages)
 
-    # Update the active tasks mapping
-    active = dict(state.get("current_active_tasks", {}))
-    for dt in decision.dispatched_tasks:
+    # Build a lookup of task statuses for validation
+    task_status_map = {t["id"]: t["status"] for t in task_list}
+
+    # Filter out hallucinated dispatches: only accept tasks that are "pending".
+    # If the LLM dispatches a completed/failed/in_progress task, silently skip it.
+    valid_dispatches = [
+        dt for dt in decision.dispatched_tasks
+        if task_status_map.get(dt.task_id) == "pending"
+    ]
+
+    # Build active tasks mapping from scratch (not merging with old state)
+    # so that completed/failed tasks from previous rounds don't leak through.
+    active: dict[str, str] = {}
+    for dt in valid_dispatches:
         active[dt.domain] = dt.task_id
 
     # Mark dispatched tasks as in_progress
     updated_tasks = []
-    dispatched_ids = {dt.task_id for dt in decision.dispatched_tasks}
+    dispatched_ids = {dt.task_id for dt in valid_dispatches}
     for t in task_list:
         t_copy = dict(t)
         if t_copy["id"] in dispatched_ids:
             t_copy["status"] = "in_progress"
         updated_tasks.append(t_copy)
 
-    current_actor = "done" if decision.is_complete else "dispatching"
+    # If LLM said complete OR all valid dispatches were filtered out
+    # (nothing left to do), mark as done.
+    is_done = decision.is_complete or (not valid_dispatches and not dispatched_ids)
+    current_actor = "done" if is_done else "dispatching"
 
     return {
         "current_active_tasks": active,

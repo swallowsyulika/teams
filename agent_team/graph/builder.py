@@ -28,6 +28,8 @@ from agent_team.agents.reviewer import reviewer_node
 def route_after_plan_review(state: GraphState) -> str:
     """Route after the plan reviewer: pass → leader, fail → planner."""
     actor = state.get("current_actor", "")
+    if actor == "done":
+        return END
     if actor == "leader":
         return "leader"
     return "planner"
@@ -59,17 +61,31 @@ def route_after_leader(state: GraphState) -> list[Send] | str:
     return sends
 
 
-def route_after_task_review(state: GraphState) -> str:
+def route_after_task_review(state: GraphState) -> list[Send] | str:
     """Route after task reviewer: pass→leader, fail→expert, circuit_break→leader."""
-    actor = state.get("current_actor", "")
-    if actor == "leader":
+    actors = state.get("current_actor", "")
+    
+    if isinstance(actors, list):
+        # When multiple actors are listed, create Send objects for experts.
+        # The reviewer already ensures "leader" is never mixed with experts
+        # (to prevent race conditions), but we enforce it here too for safety.
+        expert_sends = []
+        for act in set(actors):
+            if act in ["frontend_expert", "backend_expert"]:
+                expert_sends.append(Send(act, state))
+        if expert_sends:
+            return expert_sends
+        elif "leader" in actors:
+            return "leader"
         return "leader"
-    if actor == "frontend_expert":
-        return "frontend_expert"
-    if actor == "backend_expert":
-        return "backend_expert"
-    # Default fallback
-    return "leader"
+    else:
+        if actors == "leader":
+            return "leader"
+        if actors == "frontend_expert":
+            return "frontend_expert"
+        if actors == "backend_expert":
+            return "backend_expert"
+        return "leader"
 
 
 # ─────────────────────────────────────────────────
@@ -98,7 +114,7 @@ def build_graph() -> StateGraph:
     graph.add_conditional_edges(
         "plan_reviewer",
         route_after_plan_review,
-        {"leader": "leader", "planner": "planner"},
+        {"leader": "leader", "planner": "planner", "__end__": END},
     )
 
     # ── Phase 2: Execution ──
@@ -106,7 +122,7 @@ def build_graph() -> StateGraph:
     graph.add_conditional_edges(
         "leader",
         route_after_leader,
-        ["frontend_expert", "backend_expert"],
+        ["frontend_expert", "backend_expert", "__end__"],
     )
 
     # Experts submit to task reviewer
@@ -117,11 +133,7 @@ def build_graph() -> StateGraph:
     graph.add_conditional_edges(
         "task_reviewer",
         route_after_task_review,
-        {
-            "leader": "leader",
-            "frontend_expert": "frontend_expert",
-            "backend_expert": "backend_expert",
-        },
+        ["leader", "frontend_expert", "backend_expert"],
     )
 
     return graph.compile()

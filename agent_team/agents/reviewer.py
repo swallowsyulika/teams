@@ -116,7 +116,19 @@ def _review_plan(state: GraphState, llm) -> dict[str, Any]:
             "review_feedback": "",
         }
     else:
+        retry_counters = dict(state.get("retry_counters", {}))
+        retry_count = retry_counters.get("planning", 0) + 1
+        retry_counters["planning"] = retry_count
+
+        if retry_count >= MAX_RETRIES:
+            return {
+                "retry_counters": retry_counters,
+                "current_actor": "done",
+                "review_feedback": f"CIRCUIT BREAKER: Planner failed after {MAX_RETRIES} retries.",
+            }
+
         return {
+            "retry_counters": retry_counters,
             "current_actor": "planner",
             "review_feedback": evaluation.feedback,
         }
@@ -134,87 +146,108 @@ def _review_task(state: GraphState, llm) -> dict[str, Any]:
         # No submission to review — route back to leader
         return {"current_actor": "leader"}
 
-    # Review the most recent submission
-    submission = submissions[-1]
-    task_id = submission.get("task_id", "")
-    domain = submission.get("domain", "")
-    modified_files = submission.get("modified_files", {})
-    tool_summary = submission.get("tool_execution_summary", "")
+    active_tasks = dict(state.get("current_active_tasks", {}))
+    active_ids = set(active_tasks.values())
 
-    # Find the task description
-    task_desc = ""
-    for t in task_list:
-        if t["id"] == task_id:
-            task_desc = t["description"]
-            break
+    # Find the most recent unreviewed submission for each active task
+    latest_subs = {}
+    for sub in reversed(submissions):
+        tid = sub.get("task_id", "")
+        if tid in active_ids and tid not in latest_subs:
+            latest_subs[tid] = sub
 
-    messages = [
-        SystemMessage(content=TASK_REVIEWER_SYSTEM_PROMPT),
-        HumanMessage(
-            content=(
-                f"## Task\n- **ID**: {task_id}\n- **Domain**: {domain}\n"
-                f"- **Description**: {task_desc}\n\n"
-                f"## System Architecture\n```json\n{json.dumps(system_design, indent=2)}\n```\n\n"
-                f"## Modified Files\n"
-                + (
-                    "\n".join(
-                        f"### `{fp}`\n```\n{content}\n```"
-                        for fp, content in modified_files.items()
-                    )
-                    if modified_files
-                    else "(no files modified)\n"
-                )
-                + f"\n## Tool Execution Log\n{tool_summary}"
-            )
-        ),
-    ]
+    if not latest_subs:
+        return {"current_actor": "leader"}
 
-    evaluation: ReviewerEvaluation = llm.invoke(messages)
+    updated_tasks = [dict(t) for t in task_list]
+    next_actors = []
+    feedbacks = []
 
-    # Update task list
-    updated_tasks = []
-    for t in task_list:
-        t_copy = dict(t)
-        if t_copy["id"] == task_id:
-            if evaluation.is_passed:
-                t_copy["status"] = "completed"
-            # On fail, status stays "in_progress" for retry
-        updated_tasks.append(t_copy)
+    for sub in latest_subs.values():
+        task_id = sub.get("task_id", "")
+        domain = sub.get("domain", "")
+        modified_files = sub.get("modified_files", {})
+        tool_summary = sub.get("tool_execution_summary", "")
 
-    if evaluation.is_passed:
-        return {
-            "task_list": updated_tasks,
-            "current_actor": "leader",
-            "review_feedback": "",
-        }
-
-    # ── Failure path ──
-    retry_count = retry_counters.get(task_id, 0) + 1
-    retry_counters[task_id] = retry_count
-
-    # Circuit breaker
-    if retry_count >= MAX_RETRIES:
-        # Mark task as failed and route to leader
+        # Check if task is already completed or failed (avoid re-reviewing)
+        task_status = "pending"
+        task_desc = ""
         for t in updated_tasks:
             if t["id"] == task_id:
-                t["status"] = "failed"
+                task_desc = t["description"]
+                task_status = t["status"]
                 break
-        return {
-            "task_list": updated_tasks,
-            "retry_counters": retry_counters,
-            "current_actor": "leader",
-            "review_feedback": (
-                f"CIRCUIT BREAKER: Task {task_id} failed after "
-                f"{MAX_RETRIES} retries. Marked as failed.\n"
-                f"Last feedback: {evaluation.feedback}"
-            ),
-        }
+                
+        if task_status in ("completed", "failed"):
+            continue
 
-    # Normal rejection — return to the originating expert
-    actor = f"{domain}_expert" if domain else "leader"
+        messages = [
+            SystemMessage(content=TASK_REVIEWER_SYSTEM_PROMPT),
+            HumanMessage(
+                content=(
+                    f"## Task\n- **ID**: {task_id}\n- **Domain**: {domain}\n"
+                    f"- **Description**: {task_desc}\n\n"
+                    f"## System Architecture\n```json\n{json.dumps(system_design, indent=2)}\n```\n\n"
+                    f"## Modified Files\n"
+                    + (
+                        "\n".join(
+                            f"### `{fp}`\n```\n{content}\n```"
+                            for fp, content in modified_files.items()
+                        )
+                        if modified_files
+                        else "(no files modified)\n"
+                    )
+                    + f"\n## Tool Execution Log\n{tool_summary}"
+                )
+            ),
+        ]
+
+        evaluation: ReviewerEvaluation = llm.invoke(messages)
+
+        if evaluation.is_passed:
+            for t in updated_tasks:
+                if t["id"] == task_id:
+                    t["status"] = "completed"
+                    break
+            next_actors.append("leader")
+        else:
+            retry_count = retry_counters.get(task_id, 0) + 1
+            retry_counters[task_id] = retry_count
+
+            if retry_count >= MAX_RETRIES:
+                for t in updated_tasks:
+                    if t["id"] == task_id:
+                        t["status"] = "failed"
+                        break
+                next_actors.append("leader")
+                feedbacks.append(f"CIRCUIT BREAKER on {task_id}: {evaluation.feedback}")
+            else:
+                actor = f"{domain}_expert" if domain else "leader"
+                next_actors.append(actor)
+                feedbacks.append(f"[{task_id}]: {evaluation.feedback}")
+
+    if not next_actors:
+        return {"current_actor": "leader"}
+
+    unique_actors = list(set(next_actors))
+
+    # If any expert needs a retry, route ONLY to the expert(s).
+    # The leader must NOT run in the same super-step as a retrying
+    # expert, because it would dispatch new tasks on stale state.
+    expert_actors = [a for a in unique_actors if a != "leader"]
+    if expert_actors:
+        # Experts need retries — defer leader until next review cycle
+        final_actors = expert_actors
+    else:
+        # All tasks in this round passed or circuit-broke — wake leader
+        final_actors = ["leader"]
+
+    # Collapse single-element list to plain string for simpler routing
+    current_actor = final_actors[0] if len(final_actors) == 1 else final_actors
+
     return {
         "task_list": updated_tasks,
         "retry_counters": retry_counters,
-        "current_actor": actor,
-        "review_feedback": evaluation.feedback,
+        "current_actor": current_actor,
+        "review_feedback": "\n\n".join(feedbacks),
     }

@@ -65,33 +65,37 @@ def main() -> None:
 
     print("Starting agent workflow...\n")
 
-    # Stream execution for visibility
-    for event in graph.stream(initial_state, {"recursion_limit": 100}):
-        for node_name, node_output in event.items():
-            actor = node_output.get("current_actor", "")
-            phase = node_output.get("phase", "")
-            task_list = node_output.get("task_list", [])
+    # Stream with mode="values" so each event is the full accumulated state
+    # (with all reducers applied by LangGraph internally).
+    final_state = dict(initial_state)
+    for state_snapshot in graph.stream(
+        initial_state,
+        {"recursion_limit": 100},
+        stream_mode="values",
+    ):
+        final_state = state_snapshot
 
-            completed = sum(1 for t in task_list if t.get("status") == "completed")
-            failed = sum(1 for t in task_list if t.get("status") == "failed")
-            total = len(task_list)
+        actor = state_snapshot.get("current_actor", "")
+        phase = state_snapshot.get("phase", "")
+        task_list = state_snapshot.get("task_list", [])
 
-            status_line = ""
-            if total > 0:
-                status_line = f" | Progress: {completed}/{total} done"
-                if failed:
-                    status_line += f", {failed} failed"
+        completed = sum(1 for t in task_list if t.get("status") == "completed")
+        failed = sum(1 for t in task_list if t.get("status") == "failed")
+        total = len(task_list)
 
-            print(f"  [{node_name}] → next={actor} phase={phase}{status_line}")
+        status_line = ""
+        if total > 0:
+            status_line = f" | Progress: {completed}/{total} done"
+            if failed:
+                status_line += f", {failed} failed"
 
-    # Get final state
-    final_state = graph.invoke(initial_state, {"recursion_limit": 100})
+        print(f"  [step] → next={actor} phase={phase}{status_line}")
 
     print(f"\n{'='*60}")
     print("  EXECUTION COMPLETE")
     print(f"{'='*60}")
 
-    # Report results
+    # Report results — final_state is the authoritative accumulated state
     task_list = final_state.get("task_list", [])
     code_base = final_state.get("code_base", {})
 

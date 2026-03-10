@@ -81,7 +81,6 @@ def planner_node(state: GraphState) -> dict[str, Any]:
         "phase": "planning",
         "current_actor": "plan_reviewer",
         "review_feedback": "",
-        "retry_counters": {},
         "current_active_tasks": {},
         "code_base": state.get("code_base", {}),
         "expert_submissions": [],

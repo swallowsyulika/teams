@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 
 from agent_team.graph.config import MODEL_NAME, OPENAI_API_KEY, OPENAI_BASE_URL, TEMPERATURE
@@ -20,6 +20,9 @@ from agent_team.tools.file_tools import read_file, write_file
 from agent_team.tools.bash_tool import bash
 
 EXPERT_TOOLS = [read_file, write_file, bash]
+
+# Safety cap: maximum number of LLM ↔ tool round-trips per invocation
+MAX_TOOL_ROUNDS = 10
 
 _EXPERT_SYSTEM_PROMPT_TEMPLATE = """\
 You are the **{domain} Expert** of a multi-agent software development team.
@@ -41,12 +44,20 @@ If the reviewer previously rejected your work, their feedback is included —
 fix the issues they raised.
 """
 
+# Pre-build the tool-name → tool-function mapping (avoids rebuilding each call)
+_TOOL_MAP = {t.name: t for t in EXPERT_TOOLS}
+
 
 def _build_expert_node(domain: str):
     """Factory that creates an expert node function for the given domain."""
 
     def expert_node(state: GraphState) -> dict[str, Any]:
         """Expert node — implements a single sub-task using tools.
+
+        Runs a full ReAct loop: the LLM is called repeatedly, executing any
+        requested tool calls and feeding the results back, until the LLM
+        produces a final response with no tool calls or MAX_TOOL_ROUNDS
+        is reached.
 
         Args:
             state: Current graph state.
@@ -82,7 +93,7 @@ def _build_expert_node(domain: str):
 
         # Build messages for the ReAct agent
         system_prompt = _EXPERT_SYSTEM_PROMPT_TEMPLATE.format(domain=domain)
-        messages = [SystemMessage(content=system_prompt)]
+        messages: list = [SystemMessage(content=system_prompt)]
 
         user_content = (
             f"## System Architecture\n```json\n{json.dumps(system_design, indent=2)}\n```\n\n"
@@ -103,33 +114,52 @@ def _build_expert_node(domain: str):
 
         messages.append(HumanMessage(content=user_content))
 
-        # Use the LLM with tool binding for a ReAct-style loop
+        # ── ReAct loop: LLM ↔ tool calls ──
         llm_with_tools = llm.bind_tools(EXPERT_TOOLS)
-        response = llm_with_tools.invoke(messages)
-
-        # Process any tool calls in the response
         modified_files: dict[str, str] = {}
         tool_log: list[str] = []
+        response = None
 
-        if hasattr(response, "tool_calls") and response.tool_calls:
+        for round_idx in range(MAX_TOOL_ROUNDS):
+            response = llm_with_tools.invoke(messages)
+            messages.append(response)  # Add assistant response to history
+
+            # If no tool calls, the LLM is done
+            if not hasattr(response, "tool_calls") or not response.tool_calls:
+                break
+
+            # Execute each tool call and feed results back as ToolMessages
             for tc in response.tool_calls:
                 tool_name = tc["name"]
                 tool_args = tc["args"]
-                tool_log.append(f"{tool_name}({tool_args})")
+                tool_call_id = tc.get("id", f"{tool_name}_{round_idx}")
+                tool_log.append(f"[round {round_idx + 1}] {tool_name}({tool_args})")
 
-                # Find and execute the tool
-                tool_fn = {t.name: t for t in EXPERT_TOOLS}.get(tool_name)
+                tool_fn = _TOOL_MAP.get(tool_name)
                 if tool_fn:
                     tool_result = tool_fn.invoke(tool_args)
-                    tool_log.append(f"  → {tool_result[:200]}")
+                    result_str = str(tool_result)
+                    tool_log.append(f"  → {result_str[:200]}")
 
                     # Track file modifications
                     if tool_name == "write_file" and "path" in tool_args:
                         modified_files[tool_args["path"]] = tool_args.get("content", "")
+                else:
+                    result_str = f"ERROR: Unknown tool '{tool_name}'"
+                    tool_log.append(f"  → {result_str}")
 
-        # If no tool calls, try to extract code from the response
-        if not modified_files and response.content:
-            # The expert may have produced code inline — we still record it
+                # Feed the tool result back to the LLM for the next round
+                messages.append(
+                    ToolMessage(content=result_str, tool_call_id=tool_call_id)
+                )
+        else:
+            # Exhausted MAX_TOOL_ROUNDS — log a warning
+            tool_log.append(
+                f"(ReAct loop capped at {MAX_TOOL_ROUNDS} rounds)"
+            )
+
+        # If no tool calls were ever made, note it
+        if not tool_log and response is not None and response.content:
             tool_log.append("(Expert produced inline response, no tool calls made)")
 
         submission = ExpertSubmission(
