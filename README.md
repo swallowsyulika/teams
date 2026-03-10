@@ -1,3 +1,5 @@
+# This project is generate by AI, vibing project #
+
 # 🤖 Multi-Agent Collaboration Development Team
 
 A fully automated software development team powered by **LangGraph** and **LangChain**. Through a Supervisor–Worker architecture, the system performs requirements analysis, task breakdown, asynchronous parallel frontend/backend development, and strict automated code reviews — delivering a complete software project from a single natural-language prompt.
