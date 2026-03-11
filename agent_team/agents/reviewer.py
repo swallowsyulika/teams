@@ -8,7 +8,6 @@ Implements the circuit-breaker mechanism (MAX_RETRIES).
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -24,21 +23,23 @@ from agent_team.graph.config import (
 from agent_team.schemas.models import ReviewerEvaluation
 from agent_team.schemas.state import GraphState
 
+# Maximum characters of file content to include in a review prompt per file.
+# Keeps the reviewer LLM context bounded even for large generated files.
+_MAX_FILE_CHARS = 8_000
+
 PLAN_REVIEWER_SYSTEM_PROMPT = """\
 You are the **Reviewer** for a multi-agent software development team.
 
 You are reviewing the **Planner's system design and task breakdown**.
 
 Check for:
-1. Architecture completeness — does it address the user requirement?
-2. Task granularity — is each sub-task small enough to be completed in
-   a single LLM generation step?
-3. Logical consistency — are there missing tasks, circular dependencies,
-   or contradictions?
+1. Requirement fulfillment — are the generated tasks collectively sufficient to completely fulfill the user requirements (URD)?
+2. Task focus and granularity — do the tasks focus ONLY on source code implementation (e.g., pages, components, APIs, features)? Reject tasks related to environment setup, Dockerfiles, CI/CD, deployment, or documentation. Tasks should be high-level directional goals, not overly fine-grained.
+3. Logical consistency — is the direction of each task correct? Are there missing coding tasks, circular dependencies, or contradictions?
 4. Frontend/backend separation — are tasks correctly assigned?
 
-Be strict but fair.  If you find ANY issue, set is_passed=false and
-provide specific, actionable feedback.  Never compromise.
+Be strict but fair. If you find ANY issue, set is_passed=false and
+provide specific, actionable feedback. Never compromise.
 """
 
 TASK_REVIEWER_SYSTEM_PROMPT = """\
@@ -47,14 +48,13 @@ You are the **Reviewer** for a multi-agent software development team.
 You are reviewing an **Expert's code submission** for a specific sub-task.
 
 Check for:
-1. Task completion — does the code fully implement the task description?
-2. Logic errors — are there bugs, off-by-one errors, missing edge cases?
-3. Code quality — is the code clean, well-structured, and maintainable?
-4. Security — is there any malicious or dangerous code?
-5. File organization — are files placed correctly?
+1. Task completion — does the source code fully implement the task description?
+2. Code correctness — verify the logic, parameters, and ensure there are no bugs.
+3. Security — check for malicious code or dangerous injections.
+4. Pure coding focus — the submission must only contain application source code. No need to check for environment setups, infrastructure files, or deployments.
 
-Be strict but fair.  If you find ANY issue, set is_passed=false and
-provide specific, actionable feedback.  Never compromise.
+Be strict but fair. If you find ANY issue, set is_passed=false and
+provide specific, actionable feedback. Never compromise.
 """
 
 
@@ -88,7 +88,7 @@ def reviewer_node(state: GraphState) -> dict[str, Any]:
 
 def _review_plan(state: GraphState, llm) -> dict[str, Any]:
     """Review the Planner's system design and task breakdown."""
-    system_design = state.get("system_design", {})
+    system_design = state.get("system_design", "")
     task_list = state.get("task_list", [])
     requirement = state.get("original_requirement", "")
 
@@ -97,7 +97,7 @@ def _review_plan(state: GraphState, llm) -> dict[str, Any]:
         HumanMessage(
             content=(
                 f"## Original Requirement\n{requirement}\n\n"
-                f"## System Architecture\n```json\n{json.dumps(system_design, indent=2)}\n```\n\n"
+                f"## System Architecture\n{system_design}\n\n"
                 f"## Task List ({len(task_list)} tasks)\n"
                 + "\n".join(
                     f"- {t['id']} [{t['domain']}]: {t['description']}"
@@ -139,7 +139,7 @@ def _review_task(state: GraphState, llm) -> dict[str, Any]:
     submissions = state.get("expert_submissions", [])
     task_list = state.get("task_list", [])
     retry_counters = dict(state.get("retry_counters", {}))
-    system_design = state.get("system_design", {})
+    system_design = state.get("system_design", "")
     code_base = state.get("code_base", {})
 
     if not submissions:
@@ -181,23 +181,32 @@ def _review_task(state: GraphState, llm) -> dict[str, Any]:
         if task_status in ("completed", "failed"):
             continue
 
+        # Compact system_design to save tokens
+        design_text = system_design
+        if len(design_text) > 4000:
+            design_text = design_text[:4000] + '... (truncated)'
+
+        # Truncate large file contents to keep LLM context bounded
+        file_sections = []
+        for fp, content in modified_files.items():
+            if len(content) > _MAX_FILE_CHARS:
+                content = content[:_MAX_FILE_CHARS] + f"\n... (truncated, {len(content)} chars total)"
+            file_sections.append(f"### `{fp}`\n```\n{content}\n```")
+
         messages = [
             SystemMessage(content=TASK_REVIEWER_SYSTEM_PROMPT),
             HumanMessage(
                 content=(
                     f"## Task\n- **ID**: {task_id}\n- **Domain**: {domain}\n"
                     f"- **Description**: {task_desc}\n\n"
-                    f"## System Architecture\n```json\n{json.dumps(system_design, indent=2)}\n```\n\n"
+                    f"## System Architecture\n{design_text}\n\n"
                     f"## Modified Files\n"
                     + (
-                        "\n".join(
-                            f"### `{fp}`\n```\n{content}\n```"
-                            for fp, content in modified_files.items()
-                        )
-                        if modified_files
+                        "\n".join(file_sections)
+                        if file_sections
                         else "(no files modified)\n"
                     )
-                    + f"\n## Tool Execution Log\n{tool_summary}"
+                    + f"\n## Tool Execution Log\n{tool_summary[:3000]}"
                 )
             ),
         ]

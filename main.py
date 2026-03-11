@@ -52,7 +52,7 @@ def main() -> None:
     # Initial state
     initial_state = {
         "original_requirement": requirement,
-        "system_design": {},
+        "system_design": "",
         "task_list": [],
         "current_active_tasks": {},
         "code_base": {},

@@ -21,10 +21,10 @@ from agent_team.schemas.models import (
 def sample_planner_output() -> PlannerOutput:
     """A valid PlannerOutput for testing."""
     return PlannerOutput(
-        system_architecture={
-            "stack": {"frontend": "React", "backend": "FastAPI"},
-            "components": ["api_server", "web_client"],
-        },
+        system_architecture=(
+            "Stack: Frontend=React, Backend=FastAPI. "
+            "Components: api_server, web_client."
+        ),
         frontend_tasks=[
             TaskItem(id="fe_1", description="Create React project scaffold", domain="frontend"),
             TaskItem(id="fe_2", description="Build main App component", domain="frontend"),
@@ -97,7 +97,7 @@ def sample_initial_state(sample_task_list) -> dict:
     """A valid initial GraphState dict."""
     return {
         "original_requirement": "Build a simple web app",
-        "system_design": {"stack": {"frontend": "React", "backend": "FastAPI"}},
+        "system_design": "Stack: Frontend=React, Backend=FastAPI",
         "task_list": sample_task_list,
         "current_active_tasks": {},
         "code_base": {},

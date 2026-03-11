@@ -22,7 +22,7 @@ def _make_execution_state(
     """Create a state dict simulating an execution-phase review."""
     return {
         "original_requirement": "Build a web app",
-        "system_design": {"stack": "React + FastAPI"},
+        "system_design": "React + FastAPI",
         "task_list": [
             {"id": task_id, "description": "Build component", "domain": domain, "status": "in_progress"},
             {"id": "be_1", "description": "Build API", "domain": "backend", "status": "pending"},

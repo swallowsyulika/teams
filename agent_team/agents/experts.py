@@ -7,7 +7,6 @@ bash) via a ReAct agent loop, then submits the result for review.
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
@@ -27,11 +26,13 @@ MAX_TOOL_ROUNDS = 10
 _EXPERT_SYSTEM_PROMPT_TEMPLATE = """\
 You are the **{domain} Expert** of a multi-agent software development team.
 
-You receive ONE sub-task at a time.  Your job:
+You receive ONE sub-task at a time. Your job:
 1. Read the task description carefully.
 2. Understand the system architecture and existing code base.
 3. Use the available tools (read_file, write_file, bash) to implement
    the task completely.
+   - All newly created files and source code MUST be placed within the `./{domain}` directory (e.g., `./frontend` or `./backend`).
+   - You MUST ONLY generate application source code. Do NOT generate or modify environment files, Dockerfiles, CI/CD scripts, or infrastructure configurations.
 4. After you finish, produce a structured ExpertSubmission containing:
    - task_id: the ID of this sub-task
    - domain: "{domain}"
@@ -39,7 +40,7 @@ You receive ONE sub-task at a time.  Your job:
      created or modified
    - tool_execution_summary: a brief log of what you did
 
-Be thorough but concise.  Write clean, production-quality code.
+Be thorough but concise. Write clean, production-quality code.
 If the reviewer previously rejected your work, their feedback is included —
 fix the issues they raised.
 """
@@ -87,7 +88,7 @@ def _build_expert_node(domain: str):
             # No task assigned — return empty
             return {"expert_submissions": []}
 
-        system_design = state.get("system_design", {})
+        system_design = state.get("system_design", "")
         code_base = state.get("code_base", {})
         feedback = state.get("review_feedback", "")
 
@@ -95,8 +96,13 @@ def _build_expert_node(domain: str):
         system_prompt = _EXPERT_SYSTEM_PROMPT_TEMPLATE.format(domain=domain)
         messages: list = [SystemMessage(content=system_prompt)]
 
+        # Compact system_design to save tokens
+        design_text = system_design
+        if len(design_text) > 4000:
+            design_text = design_text[:4000] + '... (truncated)'
+
         user_content = (
-            f"## System Architecture\n```json\n{json.dumps(system_design, indent=2)}\n```\n\n"
+            f"## System Architecture\n{design_text}\n\n"
             f"## Your Task\n- **Task ID**: {task_id}\n"
             f"- **Description**: {task_desc}\n\n"
             f"## Existing Code Base Files\n"

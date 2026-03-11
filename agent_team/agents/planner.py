@@ -7,7 +7,6 @@ with fine-grained frontend/backend task lists.
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -21,12 +20,13 @@ PLANNER_SYSTEM_PROMPT = """\
 You are the **Planner** of a multi-agent software development team.
 
 Your job:
-1. Analyse the user's software requirement.
+1. Analyse the user's software requirement (URD).
 2. Design a clear, modular system architecture (technology stack, component
    breakdown, data flow, API contracts).
-3. Break the implementation into an **extremely fine-grained** list of
-   sub-tasks — each task must be small enough to be completed in a single
-   LLM generation step.
+3. Break the implementation into a **high-level** list of sub-tasks focusing ONLY on coding.
+   - A task should represent a broad goal such as: "a whole page", "a complex component", "an API endpoint", or "a core feature".
+   - Do NOT create overly fine-grained tasks.
+   - Do NOT create tasks for environment setup, Dockerfiles, CI/CD pipelines, configurations, or documentation.
 4. Separate tasks into **frontend** and **backend** domains.
 5. Each task must have a unique ID (e.g. "fe_1", "be_3"), a clear description,
    and be marked with status="pending".

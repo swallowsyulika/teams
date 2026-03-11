@@ -38,7 +38,7 @@ class TaskItem(BaseModel):
 class PlannerOutput(BaseModel):
     """Structured output from the Planner agent."""
 
-    system_architecture: dict = Field(
+    system_architecture: str = Field(
         ...,
         description=(
             "High-level architecture design including technology stack, "
@@ -47,11 +47,11 @@ class PlannerOutput(BaseModel):
     )
     frontend_tasks: list[TaskItem] = Field(
         ...,
-        description="Fine-grained frontend sub-tasks, each completable in a single generation.",
+        description="High-level frontend sub-tasks focusing purely on coding (e.g. pages, components).",
     )
     backend_tasks: list[TaskItem] = Field(
         ...,
-        description="Fine-grained backend sub-tasks, each completable in a single generation.",
+        description="High-level backend sub-tasks focusing purely on coding (e.g. APIs, features).",
     )
 
 

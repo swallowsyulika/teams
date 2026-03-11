@@ -18,7 +18,7 @@ OPENAI_BASE_URL: str = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
 TEMPERATURE: float = float(os.getenv("TEMPERATURE", "0.2"))
 
 # ── Guardrails ──────────────────────────────
-MAX_RETRIES: int = int(os.getenv("MAX_RETRIES", "10"))
+MAX_RETRIES: int = int(os.getenv("MAX_RETRIES", "3"))
 
 # ── Workspace ───────────────────────────────
 WORKSPACE_PATH: Path = Path(os.getenv("WORKSPACE_PATH", "./workspace")).resolve()

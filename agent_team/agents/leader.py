@@ -62,7 +62,7 @@ def leader_node(state: GraphState) -> dict[str, Any]:
         for t in task_list
     )
 
-    system_design_summary = str(state.get("system_design", {}))
+    system_design_summary = state.get("system_design", "")
 
     messages = [
         SystemMessage(content=LEADER_SYSTEM_PROMPT),
