@@ -2,8 +2,11 @@
 Reviewer agent node — quality gate for both phases.
 
 Phase 1 (planning): Reviews system design and task granularity.
+    Runs in the **main graph** as ``plan_reviewer``.
+
 Phase 2 (execution): Reviews expert code submissions for correctness.
-Implements the circuit-breaker mechanism (MAX_RETRIES).
+    Runs inside **domain subgraphs** as ``task_reviewer``.
+    Implements the circuit-breaker mechanism (MAX_RETRIES).
 """
 
 from __future__ import annotations
@@ -21,7 +24,7 @@ from agent_team.graph.config import (
     MAX_RETRIES,
 )
 from agent_team.schemas.models import ReviewerEvaluation
-from agent_team.schemas.state import GraphState
+from agent_team.schemas.state import GraphState, DomainState
 
 # Maximum characters of file content to include in a review prompt per file.
 # Keeps the reviewer LLM context bounded even for large generated files.
@@ -58,21 +61,20 @@ provide specific, actionable feedback. Never compromise.
 """
 
 
-def reviewer_node(state: GraphState) -> dict[str, Any]:
-    """Reviewer node — validates planner output or expert submissions.
+# ──────────────────────────────────────────────
+# Phase 1: Plan reviewer (main graph node)
+# ──────────────────────────────────────────────
 
-    Routing behaviour is determined by ``phase`` and the evaluation result:
-    - Phase "planning": pass → leader, fail → planner
-    - Phase "execution": pass → leader (mark task completed),
-      fail → back to originating expert, circuit-break → leader (mark failed)
+def plan_reviewer_node(state: GraphState) -> dict[str, Any]:
+    """Review the Planner's system design and task breakdown.
 
-    Args:
-        state: Current graph state.
+    This node runs in the **main graph** (Phase 1).
 
-    Returns:
-        Partial state update with review results and routing info.
+    Routing:
+        pass → leader (phase switches to execution)
+        fail → planner (with feedback)
+        circuit-break → done
     """
-    phase = state.get("phase", "planning")
     llm = ChatOpenAI(
         model=MODEL_NAME,
         api_key=OPENAI_API_KEY,
@@ -80,14 +82,6 @@ def reviewer_node(state: GraphState) -> dict[str, Any]:
         temperature=TEMPERATURE,
     ).with_structured_output(ReviewerEvaluation)
 
-    if phase == "planning":
-        return _review_plan(state, llm)
-    else:
-        return _review_task(state, llm)
-
-
-def _review_plan(state: GraphState, llm) -> dict[str, Any]:
-    """Review the Planner's system design and task breakdown."""
     system_design = state.get("system_design", "")
     task_list = state.get("task_list", [])
     requirement = state.get("original_requirement", "")
@@ -134,129 +128,104 @@ def _review_plan(state: GraphState, llm) -> dict[str, Any]:
         }
 
 
-def _review_task(state: GraphState, llm) -> dict[str, Any]:
-    """Review an Expert's code submission."""
-    submissions = state.get("expert_submissions", [])
+# ──────────────────────────────────────────────
+# Phase 2: Task reviewer (domain subgraph node)
+# ──────────────────────────────────────────────
+
+def task_reviewer_node(state: DomainState) -> dict[str, Any]:
+    """Review an Expert's code submission within a domain subgraph.
+
+    Reads ``current_task_id`` and evaluates the code in ``code_base``.
+
+    Routing (via conditional edge in the subgraph):
+        pass → task_selector (to grab next task)
+        fail (retries left) → expert (retry with feedback)
+        fail (circuit-break) → task_selector (skip this task)
+    """
+    domain = state.get("domain", "")
+    task_id = state.get("current_task_id", "")
     task_list = state.get("task_list", [])
-    retry_counters = dict(state.get("retry_counters", {}))
-    system_design = state.get("system_design", "")
     code_base = state.get("code_base", {})
+    system_design = state.get("system_design", "")
+    retry_count = state.get("retry_count", 0)
 
-    if not submissions:
-        # No submission to review — route back to leader
-        return {"current_actor": "leader"}
+    if not task_id:
+        return {}
 
-    active_tasks = dict(state.get("current_active_tasks", {}))
-    active_ids = set(active_tasks.values())
+    # Find the task description
+    task_desc = ""
+    for t in task_list:
+        if t["id"] == task_id:
+            task_desc = t["description"]
+            break
 
-    # Find the most recent unreviewed submission for each active task
-    latest_subs = {}
-    for sub in reversed(submissions):
-        tid = sub.get("task_id", "")
-        if tid in active_ids and tid not in latest_subs:
-            latest_subs[tid] = sub
+    llm = ChatOpenAI(
+        model=MODEL_NAME,
+        api_key=OPENAI_API_KEY,
+        base_url=OPENAI_BASE_URL,
+        temperature=TEMPERATURE,
+    ).with_structured_output(ReviewerEvaluation)
 
-    if not latest_subs:
-        return {"current_actor": "leader"}
+    # Compact system_design to save tokens
+    design_text = system_design
+    if len(design_text) > 4000:
+        design_text = design_text[:4000] + '... (truncated)'
+
+    # Gather relevant files from the code_base for this domain
+    file_sections = []
+    for fp, content in sorted(code_base.items()):
+        if len(content) > _MAX_FILE_CHARS:
+            content = content[:_MAX_FILE_CHARS] + f"\n... (truncated, {len(content)} chars total)"
+        file_sections.append(f"### `{fp}`\n```\n{content}\n```")
+
+    messages = [
+        SystemMessage(content=TASK_REVIEWER_SYSTEM_PROMPT),
+        HumanMessage(
+            content=(
+                f"## Task\n- **ID**: {task_id}\n- **Domain**: {domain}\n"
+                f"- **Description**: {task_desc}\n\n"
+                f"## System Architecture\n{design_text}\n\n"
+                f"## Code Base Files\n"
+                + (
+                    "\n".join(file_sections)
+                    if file_sections
+                    else "(no files in code base)\n"
+                )
+            )
+        ),
+    ]
+
+    evaluation: ReviewerEvaluation = llm.invoke(messages)
 
     updated_tasks = [dict(t) for t in task_list]
-    next_actors = []
-    feedbacks = []
 
-    for sub in latest_subs.values():
-        task_id = sub.get("task_id", "")
-        domain = sub.get("domain", "")
-        modified_files = sub.get("modified_files", {})
-        tool_summary = sub.get("tool_execution_summary", "")
-
-        # Check if task is already completed or failed (avoid re-reviewing)
-        task_status = "pending"
-        task_desc = ""
+    if evaluation.is_passed:
+        # Mark task as completed
         for t in updated_tasks:
             if t["id"] == task_id:
-                task_desc = t["description"]
-                task_status = t["status"]
+                t["status"] = "completed"
                 break
-                
-        if task_status in ("completed", "failed"):
-            continue
+        return {
+            "task_list": updated_tasks,
+            "review_feedback": "",
+        }
+    else:
+        new_retry_count = retry_count + 1
 
-        # Compact system_design to save tokens
-        design_text = system_design
-        if len(design_text) > 4000:
-            design_text = design_text[:4000] + '... (truncated)'
-
-        # Truncate large file contents to keep LLM context bounded
-        file_sections = []
-        for fp, content in modified_files.items():
-            if len(content) > _MAX_FILE_CHARS:
-                content = content[:_MAX_FILE_CHARS] + f"\n... (truncated, {len(content)} chars total)"
-            file_sections.append(f"### `{fp}`\n```\n{content}\n```")
-
-        messages = [
-            SystemMessage(content=TASK_REVIEWER_SYSTEM_PROMPT),
-            HumanMessage(
-                content=(
-                    f"## Task\n- **ID**: {task_id}\n- **Domain**: {domain}\n"
-                    f"- **Description**: {task_desc}\n\n"
-                    f"## System Architecture\n{design_text}\n\n"
-                    f"## Modified Files\n"
-                    + (
-                        "\n".join(file_sections)
-                        if file_sections
-                        else "(no files modified)\n"
-                    )
-                    + f"\n## Tool Execution Log\n{tool_summary[:3000]}"
-                )
-            ),
-        ]
-
-        evaluation: ReviewerEvaluation = llm.invoke(messages)
-
-        if evaluation.is_passed:
+        if new_retry_count >= MAX_RETRIES:
+            # Circuit breaker: mark task as failed, move on
             for t in updated_tasks:
                 if t["id"] == task_id:
-                    t["status"] = "completed"
+                    t["status"] = "failed"
                     break
-            next_actors.append("leader")
+            return {
+                "task_list": updated_tasks,
+                "retry_count": new_retry_count,
+                "review_feedback": f"CIRCUIT BREAKER on {task_id}: {evaluation.feedback}",
+            }
         else:
-            retry_count = retry_counters.get(task_id, 0) + 1
-            retry_counters[task_id] = retry_count
-
-            if retry_count >= MAX_RETRIES:
-                for t in updated_tasks:
-                    if t["id"] == task_id:
-                        t["status"] = "failed"
-                        break
-                next_actors.append("leader")
-                feedbacks.append(f"CIRCUIT BREAKER on {task_id}: {evaluation.feedback}")
-            else:
-                actor = f"{domain}_expert" if domain else "leader"
-                next_actors.append(actor)
-                feedbacks.append(f"[{task_id}]: {evaluation.feedback}")
-
-    if not next_actors:
-        return {"current_actor": "leader"}
-
-    unique_actors = list(set(next_actors))
-
-    # If any expert needs a retry, route ONLY to the expert(s).
-    # The leader must NOT run in the same super-step as a retrying
-    # expert, because it would dispatch new tasks on stale state.
-    expert_actors = [a for a in unique_actors if a != "leader"]
-    if expert_actors:
-        # Experts need retries — defer leader until next review cycle
-        final_actors = expert_actors
-    else:
-        # All tasks in this round passed or circuit-broke — wake leader
-        final_actors = ["leader"]
-
-    # Collapse single-element list to plain string for simpler routing
-    current_actor = final_actors[0] if len(final_actors) == 1 else final_actors
-
-    return {
-        "task_list": updated_tasks,
-        "retry_counters": retry_counters,
-        "current_actor": current_actor,
-        "review_feedback": "\n\n".join(feedbacks),
-    }
+            # Retry: keep task in_progress, feed back to expert
+            return {
+                "retry_count": new_retry_count,
+                "review_feedback": f"[{task_id}]: {evaluation.feedback}",
+            }

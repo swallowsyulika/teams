@@ -55,36 +55,6 @@ class PlannerOutput(BaseModel):
     )
 
 
-# ──────────────────────────────────────────────
-# Leader output
-# ──────────────────────────────────────────────
-
-class DispatchedTask(BaseModel):
-    """A single task dispatch instruction from the Leader."""
-
-    task_id: str = Field(..., description="ID of the task to dispatch.")
-    domain: str = Field(
-        ...,
-        description="Target expert domain: 'frontend' or 'backend'.",
-        pattern=r"^(frontend|backend)$",
-    )
-
-
-class LeaderDecision(BaseModel):
-    """Structured output from the Leader agent."""
-
-    dispatched_tasks: list[DispatchedTask] = Field(
-        ...,
-        description=(
-            "List of tasks to dispatch in parallel. "
-            "May contain one task per domain (frontend + backend simultaneously)."
-        ),
-    )
-    is_complete: bool = Field(
-        default=False,
-        description="True if all tasks are completed or failed and no more work remains.",
-    )
-
 
 # ──────────────────────────────────────────────
 # Expert output

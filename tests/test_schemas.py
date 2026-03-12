@@ -8,8 +8,6 @@ from pydantic import ValidationError
 from agent_team.schemas.models import (
     TaskItem,
     PlannerOutput,
-    LeaderDecision,
-    DispatchedTask,
     ExpertSubmission,
     ReviewerEvaluation,
 )
@@ -42,11 +40,11 @@ class TestPlannerOutput:
     def test_valid_output(self, sample_planner_output):
         assert len(sample_planner_output.frontend_tasks) == 2
         assert len(sample_planner_output.backend_tasks) == 2
-        assert "stack" in sample_planner_output.system_architecture
+        assert "stack" in sample_planner_output.system_architecture.lower()
 
     def test_empty_tasks_allowed(self):
         po = PlannerOutput(
-            system_architecture={"desc": "API only"},
+            system_architecture="API only architecture",
             frontend_tasks=[],
             backend_tasks=[TaskItem(id="be_1", description="Create server", domain="backend")],
         )
@@ -58,23 +56,6 @@ class TestPlannerOutput:
                 frontend_tasks=[],
                 backend_tasks=[],
             )
-
-
-# ── LeaderDecision ─────────────────────────────
-
-class TestLeaderDecision:
-    def test_valid_parallel_dispatch(self, sample_leader_decision):
-        assert len(sample_leader_decision.dispatched_tasks) == 2
-        assert not sample_leader_decision.is_complete
-
-    def test_complete_decision(self):
-        d = LeaderDecision(dispatched_tasks=[], is_complete=True)
-        assert d.is_complete
-        assert len(d.dispatched_tasks) == 0
-
-    def test_invalid_domain_in_dispatch(self):
-        with pytest.raises(ValidationError):
-            DispatchedTask(task_id="x_1", domain="database")
 
 
 # ── ExpertSubmission ───────────────────────────

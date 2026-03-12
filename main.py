@@ -54,13 +54,11 @@ def main() -> None:
         "original_requirement": requirement,
         "system_design": "",
         "task_list": [],
-        "current_active_tasks": {},
         "code_base": {},
         "retry_counters": {},
         "current_actor": "planner",
         "review_feedback": "",
         "phase": "planning",
-        "expert_submissions": [],
     }
 
     print("Starting agent workflow...\n")

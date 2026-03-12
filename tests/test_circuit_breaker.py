@@ -1,46 +1,42 @@
 """
-Tests for the circuit breaker mechanism in the Reviewer.
+Tests for the circuit breaker mechanism.
 
-Verifies that a task reaching MAX_RETRIES is marked 'failed' and
-routed back to the leader instead of looping indefinitely.
-Also tests the Phase 1 planning circuit breaker.
+Phase 1: Planner circuit breaker (plan_reviewer_node).
+Phase 2: Task circuit breaker (task_reviewer_node inside subgraph).
+Also tests the task_selector_node for queue exhaustion.
 """
 
 import pytest
 from unittest.mock import patch, MagicMock
 
 from agent_team.schemas.models import ReviewerEvaluation
-from agent_team.agents.reviewer import reviewer_node
+from agent_team.agents.reviewer import plan_reviewer_node, task_reviewer_node
+from agent_team.agents.experts import task_selector_node
 from agent_team.graph.config import MAX_RETRIES
 
 
-def _make_execution_state(
+# ──────────────────────────────────────────────
+# Helpers
+# ──────────────────────────────────────────────
+
+def _make_domain_state(
     task_id: str = "fe_1",
     domain: str = "frontend",
     retry_count: int = 0,
+    task_status: str = "in_progress",
 ) -> dict:
-    """Create a state dict simulating an execution-phase review."""
+    """Create a DomainState dict simulating a subgraph execution."""
     return {
-        "original_requirement": "Build a web app",
-        "system_design": "React + FastAPI",
+        "domain": domain,
         "task_list": [
-            {"id": task_id, "description": "Build component", "domain": domain, "status": "in_progress"},
-            {"id": "be_1", "description": "Build API", "domain": "backend", "status": "pending"},
+            {"id": task_id, "description": "Build component", "domain": domain, "status": task_status},
+            {"id": "fe_2", "description": "Build page", "domain": domain, "status": "pending"},
         ],
-        "current_active_tasks": {domain: task_id},
-        "code_base": {},
-        "retry_counters": {task_id: retry_count},
-        "current_actor": "task_reviewer",
+        "code_base": {"src/Component.tsx": "export default () => <div/>;"},
+        "system_design": "React + FastAPI",
+        "current_task_id": task_id,
         "review_feedback": "",
-        "phase": "execution",
-        "expert_submissions": [
-            {
-                "task_id": task_id,
-                "domain": domain,
-                "modified_files": {"src/Component.tsx": "export default () => <div/>;"},
-                "tool_execution_summary": "write_file(src/Component.tsx)",
-            }
-        ],
+        "retry_count": retry_count,
     }
 
 
@@ -48,23 +44,81 @@ def _make_planning_state(retry_count: int = 0) -> dict:
     """Create a state dict simulating a planning-phase review."""
     return {
         "original_requirement": "Build an app",
-        "system_design": {"stack": "React"},
+        "system_design": "Stack: React + FastAPI",
         "task_list": [
             {"id": "fe_1", "description": "Build UI", "domain": "frontend", "status": "pending"}
         ],
         "phase": "planning",
         "review_feedback": "",
         "retry_counters": {"planning": retry_count},
-        "current_active_tasks": {},
         "code_base": {},
-        "expert_submissions": [],
     }
 
 
+# ──────────────────────────────────────────────
+# Task Selector Tests
+# ──────────────────────────────────────────────
+
+class TestTaskSelector:
+    def test_picks_first_pending_task(self):
+        """Task selector picks the first pending task for the domain."""
+        state = {
+            "domain": "frontend",
+            "task_list": [
+                {"id": "fe_1", "description": "Build UI", "domain": "frontend", "status": "completed"},
+                {"id": "fe_2", "description": "Build page", "domain": "frontend", "status": "pending"},
+            ],
+        }
+        result = task_selector_node(state)
+        assert result["current_task_id"] == "fe_2"
+        # Should mark the picked task as in_progress
+        task = next(t for t in result["task_list"] if t["id"] == "fe_2")
+        assert task["status"] == "in_progress"
+
+    def test_returns_empty_when_queue_exhausted(self):
+        """Task selector returns empty current_task_id when no pending tasks."""
+        state = {
+            "domain": "frontend",
+            "task_list": [
+                {"id": "fe_1", "description": "Build UI", "domain": "frontend", "status": "completed"},
+                {"id": "fe_2", "description": "Build page", "domain": "frontend", "status": "failed"},
+            ],
+        }
+        result = task_selector_node(state)
+        assert result["current_task_id"] == ""
+
+    def test_ignores_other_domain_tasks(self):
+        """Task selector only considers tasks for its own domain."""
+        state = {
+            "domain": "frontend",
+            "task_list": [
+                {"id": "be_1", "description": "Build API", "domain": "backend", "status": "pending"},
+            ],
+        }
+        result = task_selector_node(state)
+        assert result["current_task_id"] == ""
+
+    def test_resets_retry_count_and_feedback(self):
+        """Task selector resets retry_count and review_feedback for the new task."""
+        state = {
+            "domain": "frontend",
+            "task_list": [
+                {"id": "fe_1", "description": "Build UI", "domain": "frontend", "status": "pending"},
+            ],
+        }
+        result = task_selector_node(state)
+        assert result["retry_count"] == 0
+        assert result["review_feedback"] == ""
+
+
+# ──────────────────────────────────────────────
+# Task Circuit Breaker Tests (Subgraph)
+# ──────────────────────────────────────────────
+
 class TestTaskCircuitBreaker:
     @patch("agent_team.agents.reviewer.ChatOpenAI")
-    def test_normal_rejection_routes_to_expert(self, mock_chat_cls):
-        """When retry count < MAX_RETRIES, rejection routes back to expert."""
+    def test_normal_rejection_keeps_in_progress(self, mock_chat_cls):
+        """When retry count < MAX_RETRIES, rejection keeps task in_progress."""
         mock_llm = MagicMock()
         mock_llm.invoke.return_value = ReviewerEvaluation(
             is_passed=False,
@@ -76,16 +130,13 @@ class TestTaskCircuitBreaker:
         mock_chat_instance.with_structured_output.return_value = mock_llm
         mock_chat_cls.return_value = mock_chat_instance
 
-        state = _make_execution_state(retry_count=0)
-        result = reviewer_node(state)
+        state = _make_domain_state(retry_count=0)
+        result = task_reviewer_node(state)
 
-        assert result["current_actor"] == "frontend_expert"
-        assert result["retry_counters"]["fe_1"] == 1
+        assert result["retry_count"] == 1
         assert "fe_1" in result["review_feedback"]
-
-        # Task should still be in_progress
-        fe_task = next(t for t in result["task_list"] if t["id"] == "fe_1")
-        assert fe_task["status"] == "in_progress"
+        # Task list should NOT be returned (task stays in_progress)
+        assert "task_list" not in result
 
     @patch("agent_team.agents.reviewer.ChatOpenAI")
     def test_circuit_breaker_triggers_at_max_retries(self, mock_chat_cls):
@@ -101,18 +152,13 @@ class TestTaskCircuitBreaker:
         mock_chat_instance.with_structured_output.return_value = mock_llm
         mock_chat_cls.return_value = mock_chat_instance
 
-        state = _make_execution_state(retry_count=MAX_RETRIES - 1)
-        result = reviewer_node(state)
+        state = _make_domain_state(retry_count=MAX_RETRIES - 1)
+        result = task_reviewer_node(state)
 
-        # Should route to leader, not expert
-        assert result["current_actor"] == "leader"
-        assert result["retry_counters"]["fe_1"] == MAX_RETRIES
-
+        assert result["retry_count"] == MAX_RETRIES
         # Task should be marked as failed
         fe_task = next(t for t in result["task_list"] if t["id"] == "fe_1")
         assert fe_task["status"] == "failed"
-
-        # Feedback should mention circuit breaker
         assert "CIRCUIT BREAKER" in result["review_feedback"]
 
     @patch("agent_team.agents.reviewer.ChatOpenAI")
@@ -129,13 +175,38 @@ class TestTaskCircuitBreaker:
         mock_chat_instance.with_structured_output.return_value = mock_llm
         mock_chat_cls.return_value = mock_chat_instance
 
-        state = _make_execution_state(retry_count=0)
-        result = reviewer_node(state)
+        state = _make_domain_state(retry_count=0)
+        result = task_reviewer_node(state)
 
-        assert result["current_actor"] == "leader"
         fe_task = next(t for t in result["task_list"] if t["id"] == "fe_1")
         assert fe_task["status"] == "completed"
+        assert result["review_feedback"] == ""
 
+    @patch("agent_team.agents.reviewer.ChatOpenAI")
+    def test_circuit_break_allows_next_task(self, mock_chat_cls):
+        """After circuit break fails a task, the queue still has pending tasks."""
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = ReviewerEvaluation(
+            is_passed=False,
+            feedback="Unfixable.",
+        )
+        mock_chat_instance = MagicMock()
+        mock_chat_instance.with_structured_output.return_value = mock_llm
+        mock_chat_cls.return_value = mock_chat_instance
+
+        state = _make_domain_state(retry_count=MAX_RETRIES - 1)
+        result = task_reviewer_node(state)
+
+        # fe_1 is failed, but fe_2 should still be pending
+        fe_1 = next(t for t in result["task_list"] if t["id"] == "fe_1")
+        fe_2 = next(t for t in result["task_list"] if t["id"] == "fe_2")
+        assert fe_1["status"] == "failed"
+        assert fe_2["status"] == "pending"
+
+
+# ──────────────────────────────────────────────
+# Plan Circuit Breaker Tests (Main Graph)
+# ──────────────────────────────────────────────
 
 class TestPlanCircuitBreaker:
     @patch("agent_team.agents.reviewer.ChatOpenAI")
@@ -151,7 +222,7 @@ class TestPlanCircuitBreaker:
         mock_chat_cls.return_value = mock_chat_instance
 
         state = _make_planning_state()
-        result = reviewer_node(state)
+        result = plan_reviewer_node(state)
 
         assert result["current_actor"] == "leader"
         assert result["phase"] == "execution"
@@ -169,7 +240,7 @@ class TestPlanCircuitBreaker:
         mock_chat_cls.return_value = mock_chat_instance
 
         state = _make_planning_state()
-        result = reviewer_node(state)
+        result = plan_reviewer_node(state)
 
         assert result["current_actor"] == "planner"
         assert "coarse-grained" in result["review_feedback"].lower()
@@ -188,90 +259,8 @@ class TestPlanCircuitBreaker:
         mock_chat_cls.return_value = mock_chat_instance
 
         state = _make_planning_state(retry_count=MAX_RETRIES - 1)
-        result = reviewer_node(state)
+        result = plan_reviewer_node(state)
 
         assert result["current_actor"] == "done"
         assert "CIRCUIT BREAKER" in result["review_feedback"]
         assert result["retry_counters"]["planning"] == MAX_RETRIES
-
-
-class TestParallelReview:
-    """Tests for reviewing multiple parallel expert submissions."""
-
-    @patch("agent_team.agents.reviewer.ChatOpenAI")
-    def test_both_pass_routes_to_leader(self, mock_chat_cls):
-        """When both frontend and backend pass, route to leader."""
-        mock_llm = MagicMock()
-        mock_llm.invoke.return_value = ReviewerEvaluation(
-            is_passed=True,
-            feedback="",
-        )
-        mock_chat_instance = MagicMock()
-        mock_chat_instance.with_structured_output.return_value = mock_llm
-        mock_chat_cls.return_value = mock_chat_instance
-
-        state = {
-            "original_requirement": "Build app",
-            "system_design": {"stack": "React + FastAPI"},
-            "task_list": [
-                {"id": "fe_1", "description": "Build UI", "domain": "frontend", "status": "in_progress"},
-                {"id": "be_1", "description": "Build API", "domain": "backend", "status": "in_progress"},
-            ],
-            "current_active_tasks": {"frontend": "fe_1", "backend": "be_1"},
-            "code_base": {},
-            "retry_counters": {},
-            "current_actor": "task_reviewer",
-            "review_feedback": "",
-            "phase": "execution",
-            "expert_submissions": [
-                {"task_id": "fe_1", "domain": "frontend", "modified_files": {}, "tool_execution_summary": ""},
-                {"task_id": "be_1", "domain": "backend", "modified_files": {}, "tool_execution_summary": ""},
-            ],
-        }
-        result = reviewer_node(state)
-
-        assert result["current_actor"] == "leader"
-        assert all(t["status"] == "completed" for t in result["task_list"])
-
-    @patch("agent_team.agents.reviewer.ChatOpenAI")
-    def test_one_fail_routes_only_to_expert_not_leader(self, mock_chat_cls):
-        """When one passes and one fails, route only to the failing expert
-        (no race condition with leader)."""
-        pass_eval = ReviewerEvaluation(is_passed=True, feedback="")
-        fail_eval = ReviewerEvaluation(is_passed=False, feedback="Bug found.")
-
-        mock_llm = MagicMock()
-        # First call reviews fe_1 (or be_1), second call reviews the other.
-        # The order depends on dict iteration, so we handle both.
-        mock_llm.invoke.side_effect = [pass_eval, fail_eval]
-        mock_chat_instance = MagicMock()
-        mock_chat_instance.with_structured_output.return_value = mock_llm
-        mock_chat_cls.return_value = mock_chat_instance
-
-        state = {
-            "original_requirement": "Build app",
-            "system_design": {"stack": "React + FastAPI"},
-            "task_list": [
-                {"id": "fe_1", "description": "Build UI", "domain": "frontend", "status": "in_progress"},
-                {"id": "be_1", "description": "Build API", "domain": "backend", "status": "in_progress"},
-            ],
-            "current_active_tasks": {"frontend": "fe_1", "backend": "be_1"},
-            "code_base": {},
-            "retry_counters": {},
-            "current_actor": "task_reviewer",
-            "review_feedback": "",
-            "phase": "execution",
-            "expert_submissions": [
-                {"task_id": "fe_1", "domain": "frontend", "modified_files": {}, "tool_execution_summary": ""},
-                {"task_id": "be_1", "domain": "backend", "modified_files": {}, "tool_execution_summary": ""},
-            ],
-        }
-        result = reviewer_node(state)
-
-        # Key assertion: current_actor should be an expert, NOT leader
-        actor = result["current_actor"]
-        if isinstance(actor, list):
-            assert "leader" not in actor
-            assert any(a.endswith("_expert") for a in actor)
-        else:
-            assert actor.endswith("_expert")

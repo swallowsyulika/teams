@@ -20,55 +20,37 @@ def _merge_dicts(a: dict, b: dict) -> dict:
     return merged
 
 
-def _reduce_current_actor(
-    existing: str | list[str],
-    new: str | list[str],
-) -> str | list[str]:
-    """Reducer for ``current_actor``.
+def _merge_task_list(a: list[dict], b: list[dict]) -> list[dict]:
+    """Reducer that merges two task lists by task ID (idempotent).
 
-    When parallel nodes (e.g. both experts) each write a value in the
-    same super-step, LangGraph invokes this reducer to merge them.
+    When two subgraphs (frontend / backend) finish concurrently and both
+    return their modified ``task_list``, LangGraph calls this reducer to
+    merge them.  Each subgraph may have changed a *subset* of tasks (e.g.
+    set ``fe_1`` to ``completed``), while the other tasks remain unchanged.
 
-    Rules:
-        1. Flatten both sides into lists.
-        2. Deduplicate (order-preserving).
-        3. Collapse a single-element list back to a plain string so that
-           downstream routing logic (which checks ``isinstance(..., list)``)
-           works unchanged.
-    """
-    # Normalise to lists
-    a = existing if isinstance(existing, list) else ([existing] if existing else [])
-    b = new if isinstance(new, list) else ([new] if new else [])
-
-    # The new value(s) take priority; include existing only when
-    # multiple distinct targets are reported in the same step.
-    seen: set[str] = set()
-    merged: list[str] = []
-    for item in b + a:
-        if item and item not in seen:
-            seen.add(item)
-            merged.append(item)
-
-    if not merged:
-        return ""
-    if len(merged) == 1:
-        return merged[0]
-    return merged
-
-
-def _reduce_submissions(a: list[dict], b: list[dict]) -> list[dict]:
-    """Reducer for ``expert_submissions``.
-
-    Normally concatenates like ``operator.add``.  The critical difference:
-    an **empty list** from the new value signals a *reset* — it replaces
-    the accumulator entirely.  This lets the Leader clear old submissions
-    between dispatch rounds so the Reviewer never sees stale entries.
+    Strategy:
+        1. Index both lists by ``id``.
+        2. Start from *a* (the accumulated state) and update with *b*
+           (the new value), so the latest status wins.
+        3. Return a flat list preserving insertion order.
     """
     if not b:
-        # Empty new list ⇒ intentional clear
-        return []
-    return list(a) + list(b)
+        return list(a)
+    if not a:
+        return list(b)
 
+    merged: dict[str, dict] = {}
+    for t in a:
+        merged[t["id"]] = dict(t)
+    for t in b:
+        merged[t["id"]] = dict(t)
+
+    return list(merged.values())
+
+
+# ──────────────────────────────────────────────
+# Main graph state (parent)
+# ──────────────────────────────────────────────
 
 class GraphState(TypedDict, total=False):
     """Global graph state shared by all agent nodes.
@@ -77,30 +59,51 @@ class GraphState(TypedDict, total=False):
         original_requirement: The user's initial software request.
         system_design: Architecture produced by the Planner.
         task_list: Flat list of sub-task dicts with keys:
-            id, description, domain ("frontend"|"backend"), status ("pending"|"in_progress"|"completed"|"failed").
-        current_active_tasks: Currently executing task IDs per domain,
-            e.g. {"frontend": "fe_1", "backend": "be_1"}.
+            id, description, domain, status.
+            Uses a task-merge reducer so parallel subgraph results
+            are combined by task ID (idempotent).
         code_base: Accumulated generated files {filepath: content}.
             Uses a dict-merge reducer so parallel writes are combined.
         retry_counters: Per-task retry count {"task_id": int}.
         current_actor: Routing indicator — next node to wake.
-            Uses a reducer so parallel writes (e.g. from two experts)
-            are merged instead of raising InvalidUpdateError.
         review_feedback: Latest reviewer feedback text.
         phase: Current execution phase — "planning" or "execution".
-        expert_submissions: Reducer-merged list of expert outputs.
-            Uses _reduce_submissions: concatenates in parallel steps,
-            but an empty list resets the accumulator (avoids unbounded growth).
     """
 
     original_requirement: str
     system_design: str
-    task_list: list[dict]
-    current_active_tasks: dict
+    task_list: Annotated[list[dict], _merge_task_list]
     code_base: Annotated[dict, _merge_dicts]
     retry_counters: dict
-    current_actor: Annotated[str | list[str], _reduce_current_actor]
+    current_actor: str
     review_feedback: str
     phase: str
-    expert_submissions: Annotated[list[dict], _reduce_submissions]
 
+
+# ──────────────────────────────────────────────
+# Domain subgraph state
+# ──────────────────────────────────────────────
+
+class DomainState(TypedDict, total=False):
+    """State for a single domain subgraph (frontend or backend).
+
+    Each subgraph loops independently through its assigned tasks:
+        task_selector → expert → task_reviewer → task_selector → ...
+
+    Attributes:
+        domain: "frontend" or "backend".
+        task_list: Tasks for this domain (filtered copy).
+        code_base: Accumulated generated files.
+        system_design: Architecture reference (read-only).
+        current_task_id: The task currently being worked on.
+        review_feedback: Feedback from the last review rejection.
+        retry_count: Retry counter for the current task.
+    """
+
+    domain: str
+    task_list: list[dict]
+    code_base: Annotated[dict, _merge_dicts]
+    system_design: str
+    current_task_id: str
+    review_feedback: str
+    retry_count: int

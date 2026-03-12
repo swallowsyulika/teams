@@ -10,8 +10,6 @@ from unittest.mock import MagicMock, patch
 from agent_team.schemas.models import (
     TaskItem,
     PlannerOutput,
-    LeaderDecision,
-    DispatchedTask,
     ExpertSubmission,
     ReviewerEvaluation,
 )
@@ -33,18 +31,6 @@ def sample_planner_output() -> PlannerOutput:
             TaskItem(id="be_1", description="Create FastAPI server with health endpoint", domain="backend"),
             TaskItem(id="be_2", description="Add CORS middleware", domain="backend"),
         ],
-    )
-
-
-@pytest.fixture
-def sample_leader_decision() -> LeaderDecision:
-    """A valid LeaderDecision dispatching to both domains."""
-    return LeaderDecision(
-        dispatched_tasks=[
-            DispatchedTask(task_id="fe_1", domain="frontend"),
-            DispatchedTask(task_id="be_1", domain="backend"),
-        ],
-        is_complete=False,
     )
 
 
@@ -99,11 +85,26 @@ def sample_initial_state(sample_task_list) -> dict:
         "original_requirement": "Build a simple web app",
         "system_design": "Stack: Frontend=React, Backend=FastAPI",
         "task_list": sample_task_list,
-        "current_active_tasks": {},
         "code_base": {},
         "retry_counters": {},
         "current_actor": "planner",
         "review_feedback": "",
         "phase": "planning",
-        "expert_submissions": [],
+    }
+
+
+@pytest.fixture
+def sample_domain_state() -> dict:
+    """A valid DomainState dict for subgraph testing."""
+    return {
+        "domain": "frontend",
+        "task_list": [
+            {"id": "fe_1", "description": "Create React scaffold", "domain": "frontend", "status": "pending"},
+            {"id": "fe_2", "description": "Build App component", "domain": "frontend", "status": "pending"},
+        ],
+        "code_base": {},
+        "system_design": "Stack: Frontend=React, Backend=FastAPI",
+        "current_task_id": "",
+        "review_feedback": "",
+        "retry_count": 0,
     }
