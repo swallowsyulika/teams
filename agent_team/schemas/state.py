@@ -42,8 +42,18 @@ def _merge_task_list(a: list[dict], b: list[dict]) -> list[dict]:
     merged: dict[str, dict] = {}
     for t in a:
         merged[t["id"]] = dict(t)
+
+    # Track updates for logging/audit
+    updates: list[str] = []
     for t in b:
-        merged[t["id"]] = dict(t)
+        tid = t["id"]
+        # Basic audit: if status changed during this merge, log it
+        if tid in merged and merged[tid].get("status") != t.get("status"):
+            updates.append(f"{tid}:{merged[tid].get('status')}->{t.get('status')}")
+        merged[tid] = dict(t)
+
+    if updates:
+        print(f"  [reducer] merged task updates: {', '.join(updates)}")
 
     return list(merged.values())
 

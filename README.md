@@ -1,229 +1,123 @@
-# This project is generate by AI, vibing project #
+# Multi-Agent Collaboration Development Team (MAC-DT)
 
-# 🤖 Multi-Agent Collaboration Development Team
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![LangGraph](https://img.shields.io/badge/Powered%20by-LangGraph-orange.svg)](https://github.com/langchain-ai/langgraph)
 
-A fully automated software development team powered by **LangGraph** and **LangChain**. Through a Supervisor–Worker architecture, the system performs requirements analysis, task breakdown, asynchronous parallel frontend/backend development, and strict automated code reviews — delivering a complete software project from a single natural-language prompt.
-
----
-
-## ✨ Features
-
-- **Two-Phase Execution** — Planning phase designs the architecture; Execution phase implements it in parallel
-- **True Async Parallel Development** — Frontend and backend experts work simultaneously via LangGraph's `Send` API
-- **Strict Automated Code Review** — Every submission goes through a Reviewer agent that never compromises
-- **Circuit Breaker** — Prevents infinite retry loops with a configurable `MAX_RETRIES` limit (default: 10)
-- **Structured Outputs** — Pydantic models enforce strict data contracts between all agents
-- **Pluggable Expert Architecture** — Easily extend with Database Expert, DevOps Expert, etc.
-- **Workspace Sandboxing** — All file operations and shell commands are restricted to a dedicated workspace directory
+這是一個基於 **LangGraph** 構建的高階多代理人協作系統，模仿了軟體開發團隊的真實工作流程。它能夠將複雜的軟體需求（URD）自動拆解、規劃，並由獨立的**前端與後端專家小組**在併行的子圖中非同步執行與審核。
 
 ---
 
-## 🏗️ Architecture
+## ✨ 核心特色
 
-### System Workflow
-
-```
-┌─────────────────── Phase 1: Planning ────────────────────┐
-│                                                          │
-│   User Requirement                                       │
-│        │                                                 │
-│        ▼                                                 │
-│   ┌──────────┐     ┌──────────────┐                      │
-│   │ Planner  │────▶│ Plan Reviewer │──── pass ──────┐    │
-│   └──────────┘     └──────────────┘                 │    │
-│        ▲                  │                         │    │
-│        └──── fail ────────┘                         │    │
-│              (with feedback)                        │    │
-└─────────────────────────────────────────────────────│────┘
-                                                      │
-                                                      ▼
-┌─────────────────── Phase 2: Execution ───────────────────┐
-│                                                          │
-│   ┌──────────┐                                           │
-│   │  Leader   │──── dispatches tasks in parallel ──┐     │
-│   └──────────┘                                     │     │
-│        ▲                                           │     │
-│        │                              ┌────────────┴──┐  │
-│        │                              │               │  │
-│   all done                    ┌───────▼──┐   ┌───────▼──┐│
-│        │                      │ Frontend  │   │ Backend  ││
-│        │                      │  Expert   │   │  Expert  ││
-│   ┌────┴────────┐             └─────┬─────┘   └─────┬────┘│
-│   │Task Reviewer│◀──────────────────┴───────────────┘    │
-│   └─────────────┘                                        │
-│     │         │                                          │
-│    pass      fail ──▶ back to Expert (with feedback)     │
-│     │                                                    │
-│     ▼                                                    │
-│   Leader (next round)                                    │
-│     ...                                                  │
-│     ▼                                                    │
-│    END                                                   │
-└──────────────────────────────────────────────────────────┘
-```
-
-### Agent Roles
-
-| Agent | Role | Key Behavior |
-|---|---|---|
-| **Planner** | System architecture & task breakdown | Produces fine-grained frontend/backend task lists |
-| **Leader** | Task dispatching & progress tracking | Reads state, dispatches one task per domain in parallel. Never writes code. |
-| **Frontend Expert** | Frontend implementation | Receives a sub-task, uses tools (read/write/bash) via ReAct loop |
-| **Backend Expert** | Backend implementation | Same as Frontend Expert, but for backend domain |
-| **Reviewer** | Quality gate & code review | Strict pass/fail. Handles both plan review (Phase 1) and code review (Phase 2) |
+-   **🚀 低延遲子圖架構 (Subgraph PULL-based model)**：
+    解決了傳統 LangGraph `Send` API 的同步屏障問題。前端與後端專家在各自的獨立子圖內部進行非同步循環（Looping），不會因為其中一方速度較慢而互相阻塞。
+-   **📈 等冪狀態合併 (Idempotent State Merging)**：
+    實作了自定義的 Reducers (`_merge_task_list`, `_merge_dicts`)，確保來自不同並行分支的任務進度與程式碼變更，能準確且無衝突地合併回主圖狀態。
+-   **🛡️ 雙重品質門檻 (Double Quality Gates)**：
+    -   **Phase 1 (Planning Review)**: 嚴格審查 Planner 產出的架構設計與任務清單。
+    -   **Phase 2 (Task Review)**: 專家完成程式碼後，必須通過 Reviewer 的逐項代碼審核，不通過則觸發自動修復循環。
+-   **🛑 智慧斷路器 (Circuit Breakers)**：
+    針對所有代理人節點內建了 `MAX_RETRIES` 機制，有效避免 LLM 出現死循環或非受控的重複嘗試。
+-   **📉 Token 消耗優化**：
+    實作了域名檔案過濾（Domain-specific filtering），Reviewer 審核時只會看到該域名相關的 Context，顯著降低 Token 消耗並提升反應速度。
 
 ---
 
-## 📁 Project Structure
+## 🏗️ 工作流程
 
-```
-agent_team/
-├── main.py                          # CLI entry point
-├── pyproject.toml                   # Dependencies & project metadata
-├── .env.example                     # Environment variable template
-│
-├── agent_team/                      # Core package
-│   ├── schemas/
-│   │   ├── state.py                 # GraphState (TypedDict) with reducers
-│   │   └── models.py               # Pydantic models (PlannerOutput, LeaderDecision, etc.)
-│   │
-│   ├── agents/
-│   │   ├── planner.py               # Planner node
-│   │   ├── leader.py                # Leader node (task dispatcher)
-│   │   ├── experts.py               # Frontend/Backend expert nodes (ReAct loop)
-│   │   └── reviewer.py              # Reviewer node (plan + task review, circuit breaker)
-│   │
-│   ├── tools/
-│   │   ├── file_tools.py            # read_file, write_file (with path-traversal protection)
-│   │   └── bash_tool.py             # bash tool (subprocess with timeout)
-│   │
-│   └── graph/
-│       ├── config.py                # Configuration from .env
-│       └── builder.py               # StateGraph construction & routing
-│
-└── tests/
-    ├── conftest.py                  # Shared fixtures (mock LLM outputs)
-    ├── test_schemas.py              # Pydantic model validation tests
-    ├── test_graph.py                # Graph compilation & routing tests
-    └── test_circuit_breaker.py      # Circuit breaker mechanism tests
+系統採用 **「規劃-分發-執行」** 的三階段模型：
+
+```mermaid
+graph TD
+    START((開始)) --> Planner[Planner: 分析需求與任務拆解]
+    Planner --> PlanReview{計畫審核}
+    PlanReview -- 失敗 --> Planner
+    PlanReview -- 通過 --> Leader[Leader: 分發任務至子圖]
+    
+    subgraph ExecutionSubgraphs [並行執行子圖]
+        direction LR
+        FE[Frontend Subgraph Loop]
+        BE[Backend Subgraph Loop]
+    end
+    
+    Leader --> FE
+    Leader --> BE
+    
+    subgraph DomainLoop [單一子圖內部邏輯]
+        Selector[Task Selector] --> Expert[Expert: 撰寫程式碼]
+        Expert --> TaskReview{代碼審核}
+        TaskReview -- 失敗/重試 --> Expert
+        TaskReview -- 通過 --> Selector
+        Selector -- 隊列清空 --> END_SUB((結束子圖))
+    end
+    
+    FE --> Merge[狀態合併與產出]
+    BE --> Merge
+    Merge --> FINISH((執行完畢))
 ```
 
 ---
 
-## 🚀 Quick Start
+## 📂 專案結構
 
-### 1. Prerequisites
+```text
+├── agent_team/
+│   ├── agents/          # 代理人節點 (Planner, Leader, Expert, Reviewer)
+│   ├── graph/           # 圖結構定義與建構子 (Builder, Config)
+│   ├── schemas/         # 狀態定義 (GraphState, DomainState) 與 Pydantic 模型
+│   └── tools/           # 專家可使用的工具 (File I/O, Bash shell)
+├── tests/               # 完整的 Graph 測試、電路斷路測試與模式驗證
+├── main.py              # CLI 入口
+├── .env.example         # 環境變數範例 (需填寫模型與 API Key)
+└── pyproject.toml       # 專案依賴管理
+```
 
-- Python ≥ 3.11
-- An OpenAI-compatible API key
+---
 
-### 2. Install
+## 🛠️ 快速開始
+
+### 1. 安裝環境
+確保您的環境為 Python 3.10 以上版本：
 
 ```bash
-git clone <repo-url>
-cd agent_team
-pip install -e ".[dev]"
+pip install -r requirements.txt
+# 或者使用您的套件管理工具
+pip install .
 ```
 
-### 3. Configure
-
-```bash
-cp .env.example .env
-```
-
-Edit `.env` with your API credentials:
+### 2. 設定環境變數
+複製 `.env.example` 並更名為 `.env`，填入您的 API Key：
 
 ```env
-OPENAI_API_KEY=sk-your-api-key-here
-OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_API_KEY=your_key_here
 MODEL_NAME=gpt-4o
-TEMPERATURE=0.2
-MAX_RETRIES=10
-WORKSPACE_PATH=./workspace
+MAX_RETRIES=3
 ```
 
-> **Note:** Any OpenAI-compatible API endpoint works (e.g. Azure OpenAI, local LLM servers). Just set `OPENAI_BASE_URL` and `MODEL_NAME` accordingly.
-
-### 4. Run
+### 3. 執行系統
+直接在終端機啟動並輸入您的需求：
 
 ```bash
-# Via command-line flag
-python main.py --requirement "Build a REST API with user authentication and a React dashboard"
-
-# Via stdin
-python main.py
-# Then type your requirement and press Ctrl+Z (Windows) or Ctrl+D (Unix) to submit
+python main.py --requirement "設計一個使用者登入介面，包含前端 React 組件與後端的 JWT 驗證 API"
 ```
 
-### 5. Run Tests
+---
+
+## 🧪 驗證與測試
+
+系統內建了強健的測試套件：
 
 ```bash
-pytest tests/ -v
+pytest
 ```
 
-Tests use mock LLM responses — no API key required.
+重點測試項目：
+-   **`test_graph.py`**: 驗證子圖迴圈終止條件與全流程狀態傳遞。
+-   **`test_circuit_breaker.py`**: 模擬 LLM 持續錯誤時，斷路器是否能正常終止執行。
+-   **`test_schemas.py`**: 檢查 `_merge_task_list` Reducer 的等冪性與衝突處理。
 
 ---
 
-## ⚙️ Configuration
-
-| Variable | Default | Description |
-|---|---|---|
-| `OPENAI_API_KEY` | `""` | Your API key |
-| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | API endpoint URL |
-| `MODEL_NAME` | `gpt-4o` | LLM model to use |
-| `TEMPERATURE` | `0.2` | LLM sampling temperature |
-| `MAX_RETRIES` | `10` | Circuit breaker threshold per task |
-| `WORKSPACE_PATH` | `./workspace` | Directory where generated code is written |
-
----
-
-## 🛡️ Safety & Guardrails
-
-### Circuit Breaker
-If any single task is rejected by the Reviewer **10 times** (configurable), it is automatically marked as `failed` and the workflow moves on. This applies to both:
-- **Phase 1**: Planner output rejection
-- **Phase 2**: Expert code submission rejection
-
-### Path Traversal Protection
-All `read_file` and `write_file` operations resolve paths relative to `WORKSPACE_PATH` and reject any path that resolves outside it (e.g. `../../etc/passwd`).
-
-### Subprocess Timeout
-The `bash` tool enforces a **60-second timeout** on all commands and restricts execution to the workspace directory.
-
-### Hallucination Guard
-The Leader validates all LLM-dispatched tasks against the actual task list — only tasks with `status="pending"` are accepted. Completed, failed, or nonexistent task IDs are silently filtered.
-
-### Parallel Data Safety
-- `code_base` uses a **dict-merge reducer** so parallel experts' file writes combine instead of overwriting
-- `expert_submissions` uses an **operator.add reducer** so parallel results concatenate correctly
-
----
-
-## 🔌 Extending with New Experts
-
-The expert architecture is designed as a factory pattern. To add a new expert (e.g. Database Expert):
-
-1. **In `experts.py`:**
-   ```python
-   database_expert_node = _build_expert_node("database")
-   ```
-
-2. **In `models.py`:** Add `"database"` to the domain regex patterns:
-   ```python
-   pattern=r"^(frontend|backend|database)$"
-   ```
-
-3. **In `builder.py`:** Register the node and add edges:
-   ```python
-   graph.add_node("database_expert", database_expert_node)
-   graph.add_edge("database_expert", "task_reviewer")
-   ```
-
-4. **Update routing functions** to handle the new expert name.
-
----
-
-## 📄 License
-
-MIT
+## 🛡️ 安全提示
+*   本系統的專家代理人具有 `bash` 工具操作權限。
+*   雖然已在 Prompt 層級限制操作範圍，但在執行前請確保在隔離環境（容器化或虛擬機）中運行。

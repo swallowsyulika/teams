@@ -171,11 +171,25 @@ def task_reviewer_node(state: DomainState) -> dict[str, Any]:
     if len(design_text) > 4000:
         design_text = design_text[:4000] + '... (truncated)'
 
-    # Gather relevant files from the code_base for this domain
+    # Gather relevant files from the code_base for this domain.
+    # We only include files belonging to the domain (e.g., ./frontend/)
+    # plus common shared files at the root to minimize context size.
     file_sections = []
     for fp, content in sorted(code_base.items()):
+        # Check relevance: current domain directory OR root level files
+        is_relevant = (
+            fp.startswith(f"./{domain}")
+            or fp.startswith(f"{domain}/")
+            or "/" not in fp.replace("./", "", 1)
+        )
+        if not is_relevant:
+            continue
+
         if len(content) > _MAX_FILE_CHARS:
-            content = content[:_MAX_FILE_CHARS] + f"\n... (truncated, {len(content)} chars total)"
+            content = (
+                content[:_MAX_FILE_CHARS]
+                + f"\n... (truncated, {len(content)} chars total)"
+            )
         file_sections.append(f"### `{fp}`\n```\n{content}\n```")
 
     messages = [
