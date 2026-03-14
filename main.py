@@ -63,23 +63,40 @@ def main() -> None:
 
     print("Starting agent workflow...\n")
 
-    # Stream with mode="values" so each event is the full accumulated state
-    # (with all reducers applied by LangGraph internally).
+    # Stream with mode="values" and subgraphs=True to catch real-time execution in subgraphs.
     final_state = dict(initial_state)
-    for state_snapshot in graph.stream(
+    global_tasks = {t["id"]: dict(t) for t in initial_state.get("task_list", [])}
+
+    for chunk in graph.stream(
         initial_state,
         {"recursion_limit": 100},
         stream_mode="values",
+        subgraphs=True,
     ):
-        final_state = state_snapshot
+        # With subgraphs=True, chunk is (namespace, state)
+        if isinstance(chunk, tuple) and len(chunk) == 2:
+            namespace, state_snapshot = chunk
+            # Parent graph has empty namespace
+            if not namespace:
+                final_state = state_snapshot
+        else:
+            state_snapshot = chunk
+            final_state = state_snapshot
+
+        # Update our global task view with real-time status from subgraphs
+        for t in state_snapshot.get("task_list", []):
+            global_tasks[t["id"]] = dict(t)
 
         actor = state_snapshot.get("current_actor", "")
-        phase = state_snapshot.get("phase", "")
-        task_list = state_snapshot.get("task_list", [])
-
-        completed = sum(1 for t in task_list if t.get("status") == "completed")
-        failed = sum(1 for t in task_list if t.get("status") == "failed")
-        total = len(task_list)
+        if not actor:
+            actor = f"subgraph:{state_snapshot.get('domain', 'unknown')}"
+            
+        phase = state_snapshot.get("phase", "execution")
+        
+        # Calculate progress using our global track
+        completed = sum(1 for t in global_tasks.values() if t.get("status") == "completed")
+        failed = sum(1 for t in global_tasks.values() if t.get("status") == "failed")
+        total = len(global_tasks)
 
         status_line = ""
         if total > 0:

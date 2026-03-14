@@ -8,7 +8,6 @@ from pydantic import ValidationError
 from agent_team.schemas.models import (
     TaskItem,
     PlannerOutput,
-    ExpertSubmission,
     ReviewerEvaluation,
 )
 
@@ -56,19 +55,6 @@ class TestPlannerOutput:
                 frontend_tasks=[],
                 backend_tasks=[],
             )
-
-
-# ── ExpertSubmission ───────────────────────────
-
-class TestExpertSubmission:
-    def test_valid_submission(self, sample_expert_submission):
-        assert sample_expert_submission.task_id == "fe_1"
-        assert "src/App.tsx" in sample_expert_submission.modified_files
-
-    def test_empty_submission(self):
-        s = ExpertSubmission(task_id="be_1", domain="backend")
-        assert s.modified_files == {}
-        assert s.tool_execution_summary == ""
 
 
 # ── ReviewerEvaluation ─────────────────────────

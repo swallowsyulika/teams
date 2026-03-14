@@ -57,29 +57,6 @@ class PlannerOutput(BaseModel):
 
 
 # ──────────────────────────────────────────────
-# Expert output
-# ──────────────────────────────────────────────
-
-class ExpertSubmission(BaseModel):
-    """Structured output from a Frontend/Backend Expert agent."""
-
-    task_id: str = Field(..., description="ID of the completed sub-task.")
-    domain: str = Field(
-        ...,
-        description="Domain of the expert: 'frontend' or 'backend'.",
-        pattern=r"^(frontend|backend)$",
-    )
-    modified_files: dict[str, str] = Field(
-        default_factory=dict,
-        description="Mapping of file paths to their content that were created or modified.",
-    )
-    tool_execution_summary: str = Field(
-        default="",
-        description="Summary of tool calls executed (file reads, writes, bash commands).",
-    )
-
-
-# ──────────────────────────────────────────────
 # Reviewer output
 # ──────────────────────────────────────────────
 

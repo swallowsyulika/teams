@@ -17,7 +17,6 @@ from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 
 from agent_team.graph.config import MODEL_NAME, OPENAI_API_KEY, OPENAI_BASE_URL, TEMPERATURE
-from agent_team.schemas.models import ExpertSubmission
 from agent_team.schemas.state import DomainState
 from agent_team.tools.file_tools import read_file, write_file
 from agent_team.tools.bash_tool import bash

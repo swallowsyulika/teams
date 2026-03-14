@@ -10,7 +10,6 @@ from unittest.mock import MagicMock, patch
 from agent_team.schemas.models import (
     TaskItem,
     PlannerOutput,
-    ExpertSubmission,
     ReviewerEvaluation,
 )
 
@@ -33,16 +32,6 @@ def sample_planner_output() -> PlannerOutput:
         ],
     )
 
-
-@pytest.fixture
-def sample_expert_submission() -> ExpertSubmission:
-    """A valid ExpertSubmission."""
-    return ExpertSubmission(
-        task_id="fe_1",
-        domain="frontend",
-        modified_files={"src/App.tsx": "export default function App() { return <h1>Hello</h1>; }"},
-        tool_execution_summary="write_file(src/App.tsx)",
-    )
 
 
 @pytest.fixture

@@ -175,7 +175,15 @@ def task_reviewer_node(state: DomainState) -> dict[str, Any]:
     # We only include files belonging to the domain (e.g., ./frontend/)
     # plus common shared files at the root to minimize context size.
     file_sections = []
+    
+    _IGNORE_EXTS = (".lock", ".png", ".jpg", ".jpeg", ".ico", ".svg", ".pyc", ".db", ".sqlite", ".pdf")
+    _IGNORE_FILES = ("package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "pipfile.lock")
+    
     for fp, content in sorted(code_base.items()):
+        filename = fp.split("/")[-1].lower()
+        if filename in _IGNORE_FILES or filename.endswith(_IGNORE_EXTS):
+            continue
+
         # Check relevance: current domain directory OR root level files
         is_relevant = (
             fp.startswith(f"./{domain}")
