@@ -16,7 +16,9 @@ from typing import Any
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 
-from agent_team.graph.config import MODEL_NAME, OPENAI_API_KEY, OPENAI_BASE_URL, TEMPERATURE
+import os
+
+from agent_team.graph.config import MODEL_NAME, OPENAI_API_KEY, OPENAI_BASE_URL, TEMPERATURE, WORKSPACE_PATH
 from agent_team.schemas.state import DomainState
 from agent_team.tools.file_tools import read_file, write_file
 from agent_team.tools.bash_tool import bash
@@ -148,11 +150,24 @@ def expert_node(state: DomainState) -> dict[str, Any]:
         f"- **Description**: {task_desc}\n\n"
         f"## Existing Code Base Files\n"
     )
-    if code_base:
-        for fp in sorted(code_base.keys()):
+    # Gather relevant files from the physical workspace for this domain.
+    existing_files = []
+    _IGNORE_DIRS = {"node_modules", "venv", ".venv", "__pycache__", ".git", "dist", "build", "coverage", ".next", ".nuxt"}
+    
+    domain_path = WORKSPACE_PATH / domain
+    if domain_path.exists():
+        for root, dirs, files in os.walk(domain_path):
+            dirs[:] = [d for d in dirs if d not in _IGNORE_DIRS and not d.startswith(".")]
+            for file in files:
+                fp = os.path.join(root, file)
+                rel_fp = os.path.relpath(fp, start=WORKSPACE_PATH)
+                existing_files.append(str(rel_fp).replace("\\", "/"))
+    
+    if existing_files:
+        for fp in sorted(existing_files):
             user_content += f"- `{fp}`\n"
     else:
-        user_content += "(empty — this is the first task)\n"
+        user_content += "(empty — no files in domain yet)\n"
 
     if feedback:
         user_content += (

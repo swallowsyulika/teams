@@ -1,0 +1,20 @@
+[
+  {
+    "id": "fe_1",
+    "description": "Create the main login page component.",
+    "domain": "frontend",
+    "status": "pending"
+  },
+  {
+    "id": "fe_2",
+    "description": "Create a dummy dashboard interface after login.",
+    "domain": "frontend",
+    "status": "pending"
+  },
+  {
+    "id": "be_1",
+    "description": "Create the authentication API endpoint.",
+    "domain": "backend",
+    "status": "pending"
+  }
+]

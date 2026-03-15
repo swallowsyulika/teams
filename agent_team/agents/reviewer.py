@@ -16,12 +16,15 @@ from typing import Any
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_openai import ChatOpenAI
 
+import os
+
 from agent_team.graph.config import (
     MODEL_NAME,
     OPENAI_API_KEY,
     OPENAI_BASE_URL,
     TEMPERATURE,
     MAX_RETRIES,
+    WORKSPACE_PATH,
 )
 from agent_team.schemas.models import ReviewerEvaluation
 from agent_team.schemas.state import GraphState, DomainState
@@ -171,34 +174,42 @@ def task_reviewer_node(state: DomainState) -> dict[str, Any]:
     if len(design_text) > 4000:
         design_text = design_text[:4000] + '... (truncated)'
 
-    # Gather relevant files from the code_base for this domain.
-    # We only include files belonging to the domain (e.g., ./frontend/)
-    # plus common shared files at the root to minimize context size.
+    # Gather relevant files from the physical workspace for this domain.
+    # Exclude non-code node_modules and builds to just review the source code.
     file_sections = []
     
-    _IGNORE_EXTS = (".lock", ".png", ".jpg", ".jpeg", ".ico", ".svg", ".pyc", ".db", ".sqlite", ".pdf")
-    _IGNORE_FILES = ("package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "pipfile.lock")
-    
-    for fp, content in sorted(code_base.items()):
-        filename = fp.split("/")[-1].lower()
-        if filename in _IGNORE_FILES or filename.endswith(_IGNORE_EXTS):
-            continue
+    _IGNORE_EXTS = {".lock", ".png", ".jpg", ".jpeg", ".ico", ".svg", ".pyc", ".db", ".sqlite", ".pdf"}
+    _IGNORE_FILES = {"package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "pipfile.lock"}
+    _IGNORE_DIRS = {"node_modules", "venv", ".venv", "__pycache__", ".git", "dist", "build", "coverage", ".next", ".nuxt"}
 
-        # Check relevance: current domain directory OR root level files
-        is_relevant = (
-            fp.startswith(f"./{domain}")
-            or fp.startswith(f"{domain}/")
-            or "/" not in fp.replace("./", "", 1)
-        )
-        if not is_relevant:
-            continue
-
-        if len(content) > _MAX_FILE_CHARS:
-            content = (
-                content[:_MAX_FILE_CHARS]
-                + f"\n... (truncated, {len(content)} chars total)"
-            )
-        file_sections.append(f"### `{fp}`\n```\n{content}\n```")
+    domain_dir = WORKSPACE_PATH / domain
+    if domain_dir.exists():
+        for root, dirs, files in os.walk(domain_dir):
+            dirs[:] = [d for d in dirs if d not in _IGNORE_DIRS and not d.startswith(".")]
+            for file in files:
+                if file in _IGNORE_FILES:
+                    continue
+                ext = os.path.splitext(file)[1].lower()
+                if ext in _IGNORE_EXTS:
+                    continue
+                
+                fp = os.path.join(root, file)
+                try:
+                    with open(fp, "r", encoding="utf-8") as f:
+                        content = f.read()
+                    
+                    rel_fp = os.path.relpath(fp, start=WORKSPACE_PATH)
+                    rel_fp_str = str(rel_fp).replace("\\", "/")
+                    
+                    if len(content) > _MAX_FILE_CHARS:
+                        content = (
+                            content[:_MAX_FILE_CHARS]
+                            + f"\n... (truncated, {len(content)} chars total)"
+                        )
+                    file_sections.append(f"### `{rel_fp_str}`\n```\n{content}\n```")
+                except Exception:
+                    # Ignore unreadable/binary files
+                    pass
 
     messages = [
         SystemMessage(content=TASK_REVIEWER_SYSTEM_PROMPT),

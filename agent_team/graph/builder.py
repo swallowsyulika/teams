@@ -18,6 +18,7 @@ from agent_team.agents.planner import planner_node
 from agent_team.agents.leader import leader_node
 from agent_team.agents.experts import task_selector_node, expert_node
 from agent_team.agents.reviewer import plan_reviewer_node, task_reviewer_node
+from agent_team.graph.config import ENABLED_EXPERTS, SKIP_PLANNER, SKIP_PLAN_REVIEWER
 
 
 # ─────────────────────────────────────────────────
@@ -103,6 +104,8 @@ def route_after_plan_review(state: GraphState) -> str:
         return END
     if actor == "leader":
         return "leader"
+    if SKIP_PLANNER:
+        raise ValueError("PROVIDED JSON FAILS REVIEW AND PLANNER IS SKIPPED. HALTING.")
     return "planner"
 
 
@@ -123,34 +126,21 @@ def route_after_leader(state: GraphState) -> list[Send] | str:
 
     sends: list[Send] = []
 
-    # Check which domains have pending tasks
-    fe_tasks = [t for t in task_list if t["domain"] == "frontend"]
-    be_tasks = [t for t in task_list if t["domain"] == "backend"]
-
-    has_fe_pending = any(t["status"] == "pending" for t in fe_tasks)
-    has_be_pending = any(t["status"] == "pending" for t in be_tasks)
-
-    if has_fe_pending:
-        sends.append(Send("frontend_subgraph", {
-            "domain": "frontend",
-            "task_list": fe_tasks,
-            "code_base": code_base,
-            "system_design": system_design,
-            "current_task_id": "",
-            "review_feedback": "",
-            "retry_count": 0,
-        }))
-
-    if has_be_pending:
-        sends.append(Send("backend_subgraph", {
-            "domain": "backend",
-            "task_list": be_tasks,
-            "code_base": code_base,
-            "system_design": system_design,
-            "current_task_id": "",
-            "review_feedback": "",
-            "retry_count": 0,
-        }))
+    # Check which domains have pending tasks dynamically
+    for domain in ENABLED_EXPERTS:
+        domain_tasks = [t for t in task_list if t["domain"] == domain]
+        has_pending = any(t["status"] == "pending" for t in domain_tasks)
+        
+        if has_pending:
+            sends.append(Send(f"{domain}_subgraph", {
+                "domain": domain,
+                "task_list": domain_tasks,
+                "code_base": code_base,
+                "system_design": system_design,
+                "current_task_id": "",
+                "review_feedback": "",
+                "retry_count": 0,
+            }))
 
     if not sends:
         return END
@@ -174,27 +164,43 @@ def build_graph() -> StateGraph:
     graph = StateGraph(GraphState)
 
     # ── Register nodes ──
-    graph.add_node("planner", planner_node)
-    graph.add_node("plan_reviewer", plan_reviewer_node)
+    if not SKIP_PLANNER:
+        graph.add_node("planner", planner_node)
+    if not SKIP_PLAN_REVIEWER:
+        graph.add_node("plan_reviewer", plan_reviewer_node)
     graph.add_node("leader", leader_node)
-    graph.add_node("frontend_subgraph", domain_subgraph)
-    graph.add_node("backend_subgraph", domain_subgraph)
+    
+    for domain in ENABLED_EXPERTS:
+        graph.add_node(f"{domain}_subgraph", domain_subgraph)
 
     # ── Phase 1: Planning ──
-    graph.add_edge(START, "planner")
-    graph.add_edge("planner", "plan_reviewer")
-    graph.add_conditional_edges(
-        "plan_reviewer",
-        route_after_plan_review,
-        {"leader": "leader", "planner": "planner", "__end__": END},
-    )
+    if not SKIP_PLANNER and not SKIP_PLAN_REVIEWER:
+        graph.add_edge(START, "planner")
+        graph.add_edge("planner", "plan_reviewer")
+        graph.add_conditional_edges(
+            "plan_reviewer",
+            route_after_plan_review,
+            {"leader": "leader", "planner": "planner", "__end__": END},
+        )
+    elif not SKIP_PLANNER and SKIP_PLAN_REVIEWER:
+        graph.add_edge(START, "planner")
+        graph.add_edge("planner", "leader")
+    elif SKIP_PLANNER and not SKIP_PLAN_REVIEWER:
+        graph.add_edge(START, "plan_reviewer")
+        graph.add_conditional_edges(
+            "plan_reviewer",
+            route_after_plan_review,
+            {"leader": "leader", "planner": "planner", "__end__": END},
+        )
+    else:  # completely skipped
+        graph.add_edge(START, "leader")
 
     # ── Phase 2: Execution ──
     # Leader fans out to domain subgraphs via Send (parallel dispatch)
     graph.add_conditional_edges(
         "leader",
         route_after_leader,
-        ["frontend_subgraph", "backend_subgraph", "__end__"],
+        [f"{domain}_subgraph" for domain in ENABLED_EXPERTS] + ["__end__"],
     )
 
     return graph.compile()

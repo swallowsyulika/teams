@@ -20,6 +20,8 @@
     針對所有代理人節點內建了 `MAX_RETRIES` 機制，有效避免 LLM 出現死循環或非受控的重複嘗試。
 -   **📉 Token 消耗優化**：
     實作了域名檔案過濾（Domain-specific filtering），Reviewer 審核時只會看到該域名相關的 Context，顯著降低 Token 消耗並提升反應速度。
+-   **⚙️ 高度可自訂與擴充 (Dynamic Nodes)**：
+    支援透過環境變數直接切換節點或跳過特定階段（如 `SKIP_PLANNER`, `SKIP_PLAN_REVIEWER`）。並能夠以 `ENABLED_EXPERTS` 決定啟用的專家節點範圍（如前端、後端、資料庫等），提供極高的流程可調整性。使用者亦能直接傳入 `.json` 任務清單跳過 AI 規劃。
 
 ---
 
@@ -86,19 +88,36 @@ pip install .
 ```
 
 ### 2. 設定環境變數
-複製 `.env.example` 並更名為 `.env`，填入您的 API Key：
+複製 `.env.example` 並更名為 `.env`，填入您的 API Key 以及進階設定：
 
 ```env
 OPENAI_API_KEY=your_key_here
 MODEL_NAME=gpt-4o
 MAX_RETRIES=3
+
+# 進階動態控制 (非必填)
+# 是否跳過 Requirement 分析與設計 (直接外部給定 JSON 任務清單)
+SKIP_PLANNER=false
+# 是否跳過圖例審核
+SKIP_PLAN_REVIEWER=false
+# 設定參與協作的專家領域模組
+ENABLED_EXPERTS=frontend,backend
 ```
 
 ### 3. 執行系統
+
+**一般執行模式：**
 直接在終端機啟動並輸入您的需求：
 
 ```bash
 python main.py --requirement "設計一個使用者登入介面，包含前端 React 組件與後端的 JWT 驗證 API"
+```
+
+**自訂任務執行模式 (Bypass Planner)：**
+若在環境變數或 CLI 中設定 `SKIP_PLANNER=true`，您可以直接提供一份規範好的任務清單並跳過 AI 架構設計。
+```bash
+# 確保 JSON 內容與 ENABLED_EXPERTS 預設匹配
+SKIP_PLANNER=true python main.py -t example.json
 ```
 
 ---

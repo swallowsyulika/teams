@@ -12,11 +12,11 @@ from typing import Any
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_openai import ChatOpenAI
 
-from agent_team.graph.config import MODEL_NAME, OPENAI_API_KEY, OPENAI_BASE_URL, TEMPERATURE
+from agent_team.graph.config import MODEL_NAME, OPENAI_API_KEY, OPENAI_BASE_URL, TEMPERATURE, ENABLED_EXPERTS
 from agent_team.schemas.models import PlannerOutput
 from agent_team.schemas.state import GraphState
 
-PLANNER_SYSTEM_PROMPT = """\
+PLANNER_SYSTEM_PROMPT = f"""\
 You are the **Planner** of a multi-agent software development team.
 
 Your job:
@@ -27,7 +27,7 @@ Your job:
    - A task should represent a broad goal such as: "a whole page", "a complex component", "an API endpoint", or "a core feature".
    - Do NOT create overly fine-grained tasks.
    - Do NOT create tasks for environment setup, Dockerfiles, CI/CD pipelines, configurations, or documentation.
-4. Separate tasks into **frontend** and **backend** domains.
+4. Separate tasks into the following domains: {', '.join(ENABLED_EXPERTS)}.
 5. Each task must have a unique ID (e.g. "fe_1", "be_3"), a clear description,
    and be marked with status="pending".
 
@@ -70,10 +70,14 @@ def planner_node(state: GraphState) -> dict[str, Any]:
 
     result: PlannerOutput = llm.invoke(messages)
 
-    # Build the flat task list
-    all_tasks = [t.model_dump() for t in result.frontend_tasks] + [
-        t.model_dump() for t in result.backend_tasks
-    ]
+    # Build the flat task list dynamically based on enabled domains
+    all_tasks = []
+    for domain in ENABLED_EXPERTS:
+        tasks = getattr(result, f"{domain}_tasks", [])
+        # Each task might be a dict or a Pydantic object, handle both safely
+        all_tasks.extend(
+            [t.model_dump() if hasattr(t, "model_dump") else t for t in tasks]
+        )
 
     return {
         "system_design": result.system_architecture,
