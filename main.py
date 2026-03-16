@@ -38,54 +38,98 @@ def main() -> None:
         default=None,
         help="Path to a JSON file containing the task list (required if SKIP_PLANNER is true).",
     )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume execution from the workspace checkpoint (tasks_status.json and checkpoint.json).",
+    )
     args = parser.parse_args()
 
-    if SKIP_PLANNER and not args.task_file:
-        print("ERROR: SKIP_PLANNER is true, but no --task-file was provided.")
-        sys.exit(1)
-
-    requirement = args.requirement
-    
-    if not requirement and not args.task_file:
-        print("Enter your software requirement (Ctrl+Z / Ctrl+D to finish):")
-        requirement = sys.stdin.read().strip()
-
-    if not requirement and not args.task_file:
-        print("ERROR: No requirement provided.")
-        sys.exit(1)
-
-    requirement = requirement or "Requirement provided via task list file."
-
     task_list = []
-    if args.task_file:
+    requirement = args.requirement
+    system_design = "System design bypassed." if SKIP_PLANNER else ""
+    
+    if args.resume:
         try:
-            with open(args.task_file, "r", encoding="utf-8") as f:
+            with open(WORKSPACE_PATH / "tasks_status.json", "r", encoding="utf-8") as f:
                 raw_tasks = json.load(f)
             
-            if not isinstance(raw_tasks, list):
-                print(f"ERROR: Task file {args.task_file} must contain a JSON array of tasks.")
-                sys.exit(1)
-
-            # Validate tasks
+            checkpoint = {}
+            checkpoint_path = WORKSPACE_PATH / "checkpoint.json"
+            if checkpoint_path.exists():
+                with open(checkpoint_path, "r", encoding="utf-8") as f:
+                    checkpoint = json.load(f)
+            
             for item in raw_tasks:
-                if not isinstance(item, dict):
-                    print(f"ERROR: Task file {args.task_file} has invalid structure. Elements must be objects.")
-                    sys.exit(1)
-                if item.get("domain") not in ENABLED_EXPERTS:
-                    print(f"ERROR: Task {item.get('id')} has invalid domain '{item.get('domain')}'. Allowed: {ENABLED_EXPERTS}")
-                    sys.exit(1)
-                # Validation using Pydantic model
+                if item.get("status") in ("in_progress", "failed"):
+                    item["status"] = "pending"
                 valid_task = TaskItem(**item)
                 task_list.append(valid_task.model_dump())
-        except FileNotFoundError:
-            print(f"ERROR: Task file {args.task_file} not found.")
+            
+            requirement = checkpoint.get("original_requirement", "Resumed from checkpoint.")
+            system_design = checkpoint.get("system_design", "")
+            
+            starting_actor = "leader"
+            starting_phase = "execution"
+            
+            print("=> Resuming execution from workspace checkpoint...")
+        except Exception as e:
+            print(f"ERROR: Failed to resume from checkpoint: {e}")
             sys.exit(1)
-        except json.JSONDecodeError:
-            print(f"ERROR: Task file {args.task_file} is not valid JSON.")
+    else:
+        if SKIP_PLANNER and not args.task_file:
+            print("ERROR: SKIP_PLANNER is true, but no --task-file was provided.")
             sys.exit(1)
-        except ValidationError as e:
-            print(f"ERROR: Task validation failed:\n{e}")
+
+        if not requirement and not args.task_file:
+            print("Enter your software requirement (Ctrl+Z / Ctrl+D to finish):")
+            requirement = sys.stdin.read().strip()
+
+        if not requirement and not args.task_file:
+            print("ERROR: No requirement provided.")
             sys.exit(1)
+
+        requirement = requirement or "Requirement provided via task list file."
+
+        if args.task_file:
+            try:
+                with open(args.task_file, "r", encoding="utf-8") as f:
+                    raw_tasks = json.load(f)
+                
+                if not isinstance(raw_tasks, list):
+                    print(f"ERROR: Task file {args.task_file} must contain a JSON array of tasks.")
+                    sys.exit(1)
+
+                # Validate tasks
+                for item in raw_tasks:
+                    if not isinstance(item, dict):
+                        print(f"ERROR: Task file {args.task_file} has invalid structure. Elements must be objects.")
+                        sys.exit(1)
+                    if item.get("domain") not in ENABLED_EXPERTS:
+                        print(f"ERROR: Task {item.get('id')} has invalid domain '{item.get('domain')}'. Allowed: {ENABLED_EXPERTS}")
+                        sys.exit(1)
+                    # Validation using Pydantic model
+                    valid_task = TaskItem(**item)
+                    task_list.append(valid_task.model_dump())
+            except FileNotFoundError:
+                print(f"ERROR: Task file {args.task_file} not found.")
+                sys.exit(1)
+            except json.JSONDecodeError:
+                print(f"ERROR: Task file {args.task_file} is not valid JSON.")
+                sys.exit(1)
+            except ValidationError as e:
+                print(f"ERROR: Task validation failed:\n{e}")
+                sys.exit(1)
+
+        if SKIP_PLANNER and SKIP_PLAN_REVIEWER:
+            starting_actor = "leader"
+            starting_phase = "execution"
+        elif SKIP_PLANNER and not SKIP_PLAN_REVIEWER:
+            starting_actor = "plan_reviewer"
+            starting_phase = "planning"
+        else:
+            starting_actor = "planner"
+            starting_phase = "planning"
 
     print(f"\n{'='*60}")
     print("  Multi-Agent Collaboration Development Team")
@@ -94,21 +138,11 @@ def main() -> None:
 
     # Build and compile the graph
     graph = build_graph()
-    
-    if SKIP_PLANNER and SKIP_PLAN_REVIEWER:
-        starting_actor = "leader"
-        starting_phase = "execution"
-    elif SKIP_PLANNER and not SKIP_PLAN_REVIEWER:
-        starting_actor = "plan_reviewer"
-        starting_phase = "planning"
-    else:
-        starting_actor = "planner"
-        starting_phase = "planning"
 
     # Initial state
     initial_state = {
         "original_requirement": requirement,
-        "system_design": "System design bypassed." if SKIP_PLANNER else "",
+        "system_design": system_design,
         "task_list": task_list,
         "code_base": {},
         "retry_counters": {},
@@ -149,6 +183,13 @@ def main() -> None:
             tasks_out_path = WORKSPACE_PATH / "tasks_status.json"
             with open(tasks_out_path, "w", encoding="utf-8") as f:
                 json.dump(list(global_tasks.values()), f, indent=2, ensure_ascii=False)
+            
+            checkpoint_data = {
+                "original_requirement": state_snapshot.get("original_requirement", ""),
+                "system_design": state_snapshot.get("system_design", "")
+            }
+            with open(WORKSPACE_PATH / "checkpoint.json", "w", encoding="utf-8") as f:
+                json.dump(checkpoint_data, f, indent=2, ensure_ascii=False)
         except Exception:
             pass
 
