@@ -20,6 +20,15 @@ def _merge_dicts(a: dict, b: dict) -> dict:
     return merged
 
 
+def _merge_strings(a: str, b: str) -> str:
+    """Reducer that simply keeps the latest string.
+
+    Prevents InvalidUpdateError when multiple parallel subgraphs return
+    the same state keys (like system_design) simultaneously.
+    """
+    return b if b is not None else a
+
+
 def _merge_task_list(a: list[dict], b: list[dict]) -> list[dict]:
     """Reducer that merges two task lists by task ID (idempotent).
 
@@ -81,12 +90,13 @@ class GraphState(TypedDict, total=False):
     """
 
     original_requirement: str
-    system_design: str
+    system_design: Annotated[str, _merge_strings]
     task_list: Annotated[list[dict], _merge_task_list]
     code_base: Annotated[dict, _merge_dicts]
-    retry_counters: dict
+    # retry_counters: dict
+    retry_counters: Annotated[dict, _merge_dicts]
     current_actor: str
-    review_feedback: str
+    review_feedback: Annotated[str, _merge_strings]
     phase: str
 
 

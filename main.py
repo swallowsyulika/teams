@@ -18,7 +18,7 @@ from pydantic import ValidationError
 load_dotenv()
 
 from agent_team.graph.builder import build_graph
-from agent_team.graph.config import ENABLED_EXPERTS, SKIP_PLANNER, SKIP_PLAN_REVIEWER
+from agent_team.graph.config import ENABLED_EXPERTS, SKIP_PLANNER, SKIP_PLAN_REVIEWER, WORKSPACE_PATH
 from agent_team.schemas.models import TaskItem
 
 
@@ -142,6 +142,15 @@ def main() -> None:
         # Update our global task view with real-time status from subgraphs
         for t in state_snapshot.get("task_list", []):
             global_tasks[t["id"]] = dict(t)
+
+        # Export current task list to a JSON file for real-time monitoring
+        try:
+            WORKSPACE_PATH.mkdir(parents=True, exist_ok=True)
+            tasks_out_path = WORKSPACE_PATH / "tasks_status.json"
+            with open(tasks_out_path, "w", encoding="utf-8") as f:
+                json.dump(list(global_tasks.values()), f, indent=2, ensure_ascii=False)
+        except Exception:
+            pass
 
         actor = state_snapshot.get("current_actor", "")
         if not actor:
