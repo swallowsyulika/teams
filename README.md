@@ -22,6 +22,10 @@
     實作了域名檔案過濾（Domain-specific filtering），Reviewer 審核時只會看到該域名相關的 Context，顯著降低 Token 消耗並提升反應速度。
 -   **⚙️ 高度可自訂與擴充 (Dynamic Nodes)**：
     支援透過環境變數直接切換節點或跳過特定階段（如 `SKIP_PLANNER`, `SKIP_PLAN_REVIEWER`）。並能夠以 `ENABLED_EXPERTS` 決定啟用的專家節點範圍（如前端、後端、資料庫等），提供極高的流程可調整性。使用者亦能直接傳入 `.json` 任務清單跳過 AI 規劃。
+-   **💾 實時進度保存與復原 (Persistence & Resume)**：
+    執行過程中會自動將 Task 狀態與系統設計藍圖匯出至 `tasks_status.json` 與 `checkpoint.json`。若執行中斷，可透過 `--resume` 參數無縫接軌，自動修復並重啟失敗或執行中的任務。
+-   **📁 實體工作區感知 (Workspace-Aware)**：
+    Expert 與 Reviewer 直接掃描實體工作目錄，解決了透過 Bash 產生的檔案無法被 Agent 感知的「腦裂」問題。內建智慧過濾器自動跳過 `node_modules`、二進位檔與編譯產物，僅審核核心代碼。
 
 ---
 
@@ -118,6 +122,12 @@ python main.py --requirement "設計一個使用者登入介面，包含前端 R
 ```bash
 # 確保 JSON 內容與 ENABLED_EXPERTS 預設匹配
 SKIP_PLANNER=true python main.py -t example.json
+```
+
+**斷點續傳模式 (Resume Mode)：**
+若執行中斷或需重新啟動上次未完成的任務，系統會自動讀取 `./workspace` 下的進度：
+```bash
+python main.py --resume
 ```
 
 ---
